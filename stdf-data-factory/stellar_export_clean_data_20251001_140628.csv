@@ -1,0 +1,13 @@
+product_name,year,value,price,capacity,region,unit,metric,entity_type,curve_type,is_cost_metric,source_count,quality_score
+Price,2014.0,528.06,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2015.0,605.8,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2016.0,571.22,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2017.0,621.01,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2018.0,605.6,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2019.0,452.82,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2020.0,406.58,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2021.0,527.5,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2022.0,445.26,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2023.0,424.42,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2024.0,427.97,,,Global,,Price,Table,Adoption,False,1,0.79
+Price,2025.0,452.47,,,Global,,Price,Table,Adoption,False,1,0.79

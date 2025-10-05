@@ -1,0 +1,7 @@
+Validation Check,Status,Issues,Details
+Missing Values,PASS,0,84.6% complete
+Duplicate Records,PASS,0,No duplicates
+Data Type Consistency,PASS,0,All types valid
+Statistical Outliers,PASS,0,No outliers
+Logical Consistency,PASS,0,All logical
+Format & Unit Consistency,PASS,0,All consistent

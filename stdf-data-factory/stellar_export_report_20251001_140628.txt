@@ -1,0 +1,148 @@
+================================================================================
+STELLAR FRAMEWORK - COMPREHENSIVE DATA VALIDATION REPORT
+================================================================================
+Generated: 2025-10-01 14:03:40
+
+OVERALL ASSESSMENT
+----------------------------------------
+Quality Grade: B
+Overall Score: 76.2%
+Data Reliability: 76.2%
+
+RECORD SUMMARY
+----------------------------------------
+Total Records: 12
+Clean Records: 12
+Flagged Records: 0
+Pass Rate: 100.0%
+
+DATA QUALITY VALIDATION RESULTS
+----------------------------------------
+
+1. COMPLETENESS CHECK:
+   Overall Completeness: 84.6%
+   Critical Fields Complete: ✅ Yes
+   Missing Critical Count: 0
+   Status: WARNING
+   Column Completeness:
+     - product_name: 100.0% (CRITICAL)
+     - year: 100.0% (CRITICAL)
+     - value: 100.0% (CRITICAL)
+
+2. DUPLICATE RECORDS:
+   Status: ✅ PASS
+   Duplicate Groups Found: 0
+
+3. DATA TYPE CONSISTENCY:
+   Status: ✅ PASS
+   Columns with Issues: 0
+   Total Invalid Entries: 0
+
+4. STATISTICAL OUTLIERS:
+   Status: ✅ PASS
+   Total Outliers: 0
+   Series with Outliers: 0
+
+5. LOGICAL CONSISTENCY:
+   Status: ✅ PASS
+   Total Issues: 0
+
+6. FORMAT & UNIT CONSISTENCY:
+   Status: ✅ PASS
+   Inconsistent Series: 0
+
+DIMENSION SCORES
+----------------------------------------
+✅ Completeness: 84.6%
+✅ Accuracy: 100.0%
+✅ Consistency: 100.0%
+✅ Validity: 100.0%
+❌ Wrights Law: 0.0%
+❌ Scurve Adoption: 0.0%
+
+TONY SEBA FRAMEWORK ANALYSIS
+----------------------------------------
+
+Wright's Law Analysis (Cost Curves):
+
+  Price:
+    Learning Rate: 2.2%
+    R-squared: 0.533
+    Data Points: 12
+    Compliant: ❌ No
+
+S-Curve Analysis (Adoption Patterns):
+
+  Price:
+    R-squared: 0.000
+    Growth Rate: 0.00
+    Data Points: 12
+    Compliant: ❌ No
+
+INVESTMENT GRADE ASSESSMENT
+----------------------------------------
+⚠️ NEAR INVESTMENT-GRADE QUALITY
+
+Data quality approaching investment-grade but requires improvements.
+
+Required Actions:
+
+RECOMMENDATIONS
+----------------------------------------
+1. Improve data completeness by filling missing values or finding additional sources
+5. Add more cost curve data for Wright's Law analysis
+6. Include more adoption curves for S-curve pattern validation
+
+================================================================================
+VALIDATION LOGS:
+================================================================================
+✅ Converted 1 entities to 12 data points
+🔍 Running comprehensive data quality checks...
+   - Completeness: 84.6%
+   - Duplicates: None found ✓
+   - Type consistency: All valid ✓
+   - Outliers: None detected ✓
+   - Logical consistency: All valid ✓
+🔍 Filtering unreasonable data jumps...
+   - No unreasonable data jumps detected
+📋 Step 1: Running basic validation...
+   - Completeness score: 87.5%
+   - Domain violations: 0
+   - Clean records: 12
+   - Flagged records: 0
+📈 Step 2: Running Tony Seba analysis...
+   - Price Wright's Law: R²=0.533, Compliant=False
+   - Price S-Curve: R²=0.000, Compliant=False
+🎯 Step 3: Calculating validation scores...
+   - Overall Grade: B
+   - Overall Score: 76.2%
+📊 Step 4: Analyzing individual curves...
+   - Analyzed 1 curves for missing values
+   - Analyzed 1 curves for outliers
+🔎 Step 5: Running domain expert validations...
+   ================================================================================
+   DOMAIN EXPERT VALIDATION SUMMARY
+   ================================================================================
+   
+   Units And Scale:
+     ✅ Passed: 0
+     ❌ Failed: 0
+     ℹ️ Info: 1
+   
+   Global Oil Sanity:
+     ✅ Passed: 1
+     ❌ Failed: 0
+   
+   Data Source Quality:
+     ✅ Passed: 1
+     ❌ Failed: 0
+   
+   ================================================================================
+   OVERALL SUMMARY
+   Total Checks: 3
+   Passed: 2 (66.7%)
+   Failed: 0 (0.0%)
+   Info/Warnings: 1
+   ================================================================================
+📄 Step 6: Generating validation report...
+✅ Validation pipeline completed successfully!

@@ -1,0 +1,10 @@
+streamlit
+pymupdf
+markitdown
+groq
+openai
+pillow
+pandas
+python-dotenv
+plotly
+crawl4ai

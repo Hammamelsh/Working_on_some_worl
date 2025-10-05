@@ -1,0 +1,109 @@
+{
+  "timestamp": "20251001_140628",
+  "score": {
+    "overall": 0.7615000000000001,
+    "grade": "B",
+    "dimensions": {
+      "completeness": 0.846,
+      "accuracy": 1.0,
+      "consistency": 1.0,
+      "validity": 1.0,
+      "wrights_law": 0.0,
+      "scurve_adoption": 0.0
+    }
+  },
+  "enhanced_validation": {
+    "completeness": {
+      "overall_completeness": 0.846,
+      "column_stats": {
+        "product_name": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": true,
+          "completeness": 100.0
+        },
+        "year": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": true,
+          "completeness": 100.0
+        },
+        "value": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": true,
+          "completeness": 100.0
+        },
+        "price": {
+          "missing_count": 12,
+          "missing_percentage": 100.0,
+          "is_critical": false,
+          "completeness": 0.0
+        },
+        "capacity": {
+          "missing_count": 12,
+          "missing_percentage": 100.0,
+          "is_critical": false,
+          "completeness": 0.0
+        },
+        "region": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": false,
+          "completeness": 100.0
+        },
+        "unit": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": false,
+          "completeness": 100.0
+        },
+        "metric": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": false,
+          "completeness": 100.0
+        },
+        "entity_type": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": false,
+          "completeness": 100.0
+        },
+        "curve_type": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": false,
+          "completeness": 100.0
+        },
+        "is_cost_metric": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": false,
+          "completeness": 100.0
+        },
+        "source_count": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": false,
+          "completeness": 100.0
+        },
+        "quality_score": {
+          "missing_count": 0,
+          "missing_percentage": 0.0,
+          "is_critical": false,
+          "completeness": 100.0
+        }
+      },
+      "critical_fields_complete": true,
+      "missing_critical_count": 0,
+      "total_records": 12,
+      "total_columns": 13
+    },
+    "duplicates_count": 0,
+    "type_issues_count": 0,
+    "outliers_count": 0,
+    "logic_issues_count": 0,
+    "format_issues_count": 0
+  }
+}
