@@ -16,6 +16,7 @@ from scipy.optimize import curve_fit
 import streamlit as st
 import json
 from pathlib import Path
+from validation_constants import *
 
 try:
     from commodity_validators import (
@@ -46,8 +47,200 @@ from ground_truth_validators import (
     format_expert_validation_summary,
 )
 
-logger = logging.getLogger(__name__)
+# ================================================================================
+# STRUCTURED LOGGING CONFIGURATION
+# ================================================================================
 
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+
+def setup_stellar_logging():
+    """
+    Configure comprehensive structured logging for STELLAR framework.
+    Logs to both file (rotating) and console with different levels.
+    """
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    
+    logger = logging.getLogger('STELLAR')
+    logger.setLevel(logging.DEBUG)
+    
+    # Remove existing handlers to avoid duplicates
+    logger.handlers = []
+    
+    # File handler (rotating, 10MB max, 5 backups)
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'stellar_validation.log'),
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.INFO)
+    
+    # Console handler (warnings and above)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.WARNING)
+    
+    # Detailed formatter with context
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(funcName)s() - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+# Initialize logger
+logger = setup_stellar_logging()
+
+# Log startup
+logger.info("="*80)
+logger.info("STELLAR Framework Validation Module Initialized")
+logger.info(f"Version: 2.0.0-enhanced")
+logger.info(f"Logging to: logs/stellar_validation.log")
+logger.info("="*80)
+
+from functools import lru_cache
+import hashlib
+
+# ================================================================================
+# PERFORMANCE OPTIMIZATION - CACHING
+# ================================================================================
+
+def get_dataframe_hash(df: pd.DataFrame) -> str:
+    """Generate hash of dataframe for cache key"""
+    try:
+        return hashlib.md5(pd.util.hash_pandas_object(df, index=True).values).hexdigest()
+    except:
+        # Fallback if hashing fails
+        return hashlib.md5(str(len(df)).encode()).hexdigest()
+
+
+@lru_cache(maxsize=128)
+def cached_wrights_law_analysis(df_hash: str, product: str, years_tuple: tuple, values_tuple: tuple) -> Dict:
+    """
+    Cached Wright's Law analysis - speeds up re-runs.
+    Uses hash + tuples since DataFrame isn't hashable.
+    """
+    try:
+        years = np.array(years_tuple)
+        values = np.array(values_tuple)
+        
+        if len(values) < 5:
+            return {"error": "Insufficient data points"}
+        
+        from scipy import stats
+        slope, intercept, r_value, p_value, std_err = stats.linregress(years, np.log(values))
+        r2 = r_value ** 2
+        learning_rate = 1 - (2 ** slope) if slope < 0 else 0.0
+        
+        # Determine compliance
+        entity_lower = product.lower() if product else ''
+        if 'solar' in entity_lower:
+            min_rate, max_rate = 0.15, 0.30
+        elif 'battery' in entity_lower or 'lithium' in entity_lower:
+            min_rate, max_rate = 0.10, 0.25
+        elif 'wind' in entity_lower:
+            min_rate, max_rate = 0.05, 0.15
+        else:
+            min_rate, max_rate = 0.05, 0.40
+        
+        compliant = (slope < 0) and (r2 >= 0.60) and (min_rate <= learning_rate <= max_rate)
+        
+        return {
+            "learning_rate": float(learning_rate),
+            "r_squared": float(r2),
+            "slope": float(slope),
+            "compliant": bool(compliant),
+            "data_points": int(len(values)),
+            "data_type": "cost",
+            "cached": True
+        }
+    except Exception as e:
+        return {"error": f"Analysis failed: {str(e)}"}
+
+
+def optimize_dataframe_memory(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
+    """
+    Optimize DataFrame memory usage by downcasting numeric types.
+    
+    Returns:
+        Tuple of (optimized_df, optimization_report)
+    """
+    if df.empty:
+        return df, {"error": "Empty DataFrame"}
+    
+    memory_before = df.memory_usage(deep=True).sum() / 1024**2  # MB
+    
+    optimized_df = df.copy()
+    optimization_log = []
+    
+    for col in optimized_df.columns:
+        col_type = optimized_df[col].dtype
+        
+        if col_type == 'float64':
+            # Check if can downcast to float32
+            if optimized_df[col].notna().any():
+                max_val = optimized_df[col].max()
+                min_val = optimized_df[col].min()
+                
+                # Float32 range: ~1.2e-38 to ~3.4e38
+                if abs(max_val) < 3.4e38 and abs(min_val) < 3.4e38:
+                    optimized_df[col] = optimized_df[col].astype('float32')
+                    optimization_log.append(f"{col}: float64 → float32")
+        
+        elif col_type == 'int64':
+            # Downcast integers
+            if optimized_df[col].notna().any():
+                max_val = optimized_df[col].max()
+                min_val = optimized_df[col].min()
+                
+                if min_val >= 0:
+                    if max_val < 255:
+                        optimized_df[col] = optimized_df[col].astype('uint8')
+                        optimization_log.append(f"{col}: int64 → uint8")
+                    elif max_val < 65535:
+                        optimized_df[col] = optimized_df[col].astype('uint16')
+                        optimization_log.append(f"{col}: int64 → uint16")
+                    elif max_val < 4294967295:
+                        optimized_df[col] = optimized_df[col].astype('uint32')
+                        optimization_log.append(f"{col}: int64 → uint32")
+                else:
+                    if -128 <= min_val and max_val < 127:
+                        optimized_df[col] = optimized_df[col].astype('int8')
+                        optimization_log.append(f"{col}: int64 → int8")
+                    elif -32768 <= min_val and max_val < 32767:
+                        optimized_df[col] = optimized_df[col].astype('int16')
+                        optimization_log.append(f"{col}: int64 → int16")
+                    elif -2147483648 <= min_val and max_val < 2147483647:
+                        optimized_df[col] = optimized_df[col].astype('int32')
+                        optimization_log.append(f"{col}: int64 → int32")
+        
+        elif col_type == 'object':
+            # Convert to categorical if few unique values
+            n_unique = optimized_df[col].nunique()
+            n_total = len(optimized_df[col])
+            
+            if n_unique / n_total < 0.5 and n_unique < 100:
+                optimized_df[col] = optimized_df[col].astype('category')
+                optimization_log.append(f"{col}: object → category")
+    
+    memory_after = optimized_df.memory_usage(deep=True).sum() / 1024**2  # MB
+    reduction = (memory_before - memory_after) / memory_before * 100 if memory_before > 0 else 0
+    
+    return optimized_df, {
+        "memory_before_mb": memory_before,
+        "memory_after_mb": memory_after,
+        "reduction_percent": reduction,
+        "optimizations": optimization_log,
+        "interpretation": f"Reduced memory usage by {reduction:.1f}% ({memory_before:.2f}MB → {memory_after:.2f}MB)"
+    }
 # ================================================================================
 # CORE VALIDATION CLASSES
 # ================================================================================
@@ -480,21 +673,20 @@ def analyze_wrights_law(df: pd.DataFrame, product: str) -> Dict[str, Any]:
     # Check unit field
     if 'unit' in sub.columns and len(sub) > 0:
         unit_str = str(sub['unit'].iloc[0]).lower()
-        # Extended list of cost indicators
         cost_indicators = ['$', 'usd', 'cost', 'price', '/mwh', '/kwh', 'lcoe',
-                           'dollar', 'eur', '€', '£', 'gbp', 'cent', 'levelized']
+                          'dollar', 'eur', '€', '£', 'gbp', 'cent', 'levelized']
         is_cost_data = any(indicator in unit_str for indicator in cost_indicators)
 
-    # Check metric field
-    if 'metric' in sub.columns and len(sub) > 0 and not is_cost_data:
+    # Check metric field if unit check inconclusive
+    if not is_cost_data and 'metric' in sub.columns and len(sub) > 0:
         metric_str = str(sub['metric'].iloc[0]).lower()
         is_cost_data = any(term in metric_str for term in ['cost', 'price', 'lcoe', 'levelized', 'capex', 'opex'])
 
     # Check curve_type from database
-    if 'curve_type' in sub.columns and len(sub) > 0 and not is_cost_data:
+    if not is_cost_data and 'curve_type' in sub.columns and len(sub) > 0:
         curve_type_str = str(sub['curve_type'].iloc[0]).lower()
-        is_cost_data = 'cost' in curve_type_str or 'wright' in curve_type_str
-    # Skip Wright's Law for non-cost data - THIS IS KEY
+        is_cost_data = 'cost' in curve_type_str or 'wright' in curve_type_str or 'price' in curve_type_str
+    logger.debug(f"Skipping Wright's Law for {product} - not cost data")
     if not is_cost_data:
         return {
             "error": "Not applicable - Wright's Law only applies to cost data",
@@ -506,16 +698,34 @@ def analyze_wrights_law(df: pd.DataFrame, product: str) -> Dict[str, Any]:
     if len(sub) < 5:
         return {"error": "Insufficient data points"}
 
+    # TRY CACHE FIRST
+    try:
+        years = sub["year"].values
+        values = sub["value"].values
+        
+        # Generate hash for caching
+        years_tuple = tuple(years)
+        values_tuple = tuple(values)
+        df_hash = get_dataframe_hash(sub)
+        
+        # Try cached version
+        cached_result = cached_wrights_law_analysis(df_hash, product, years_tuple, values_tuple)
+        if cached_result and 'error' not in cached_result:
+            logger.info(f"Using cached Wright's Law result for {product}")
+            return cached_result
+    except:
+        pass  # Fall through to normal calculation
+
+    # NORMAL CALCULATION if cache fails or unavailable
     try:
         x = sub["year"].values
         y = sub["value"].values
 
-        # For cost data, we expect DECLINING values
+        from scipy import stats
         slope, intercept, r_value, p_value, std_err = stats.linregress(x, np.log(y))
         r2 = r_value ** 2
         learning_rate = 1 - (2 ** slope) if slope < 0 else 0.0
 
-        # Wright's Law compliance: negative slope (declining costs) with good fit
         # Technology-specific learning rates
         entity_lower = product.lower() if product else ''
         if 'solar' in entity_lower:
@@ -802,6 +1012,1473 @@ def detect_curve_outliers(results: List[Dict[str, Any]], method: str = "iqr") ->
     return outlier_analysis
 
 # ================================================================================
+# STATISTICAL RIGOR ENHANCEMENTS
+# ================================================================================
+
+def calculate_wrights_law_confidence_intervals(df: pd.DataFrame, product: str,
+                                              confidence_level: float = 0.95) -> Dict[str, Any]:
+    """
+    Calculate confidence intervals for Wright's Law learning rate using bootstrap
+    """
+    from scipy import stats
+    import numpy as np
+    
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    # Check if cost data
+    is_cost_data = False
+    if 'unit' in sub.columns and len(sub) > 0:
+        unit_str = str(sub['unit'].iloc[0]).lower()
+        cost_indicators = ['$', 'usd', 'cost', 'price', '/mwh', '/kwh', 'lcoe']
+        is_cost_data = any(indicator in unit_str for indicator in cost_indicators)
+    
+    if not is_cost_data or len(sub) < 5:
+        return {"error": "Insufficient cost data or not applicable"}
+    
+    try:
+        x = sub["year"].values
+        y = sub["value"].values
+        
+        # Original fit
+        slope, intercept, r_value, p_value, std_err = stats.linregress(x, np.log(y))
+        learning_rate = 1 - (2 ** slope) if slope < 0 else 0.0
+        
+        # Bootstrap confidence intervals
+        n_bootstrap = 1000
+        bootstrap_rates = []
+        
+        for _ in range(n_bootstrap):
+            # Resample with replacement
+            indices = np.random.choice(len(x), size=len(x), replace=True)
+            x_boot = x[indices]
+            y_boot = y[indices]
+            
+            try:
+                slope_boot, _, _, _, _ = stats.linregress(x_boot, np.log(y_boot))
+                rate_boot = 1 - (2 ** slope_boot) if slope_boot < 0 else 0.0
+                bootstrap_rates.append(rate_boot)
+            except:
+                continue
+        
+        if bootstrap_rates:
+            # Calculate confidence intervals
+            alpha = 1 - confidence_level
+            lower_percentile = (alpha / 2) * 100
+            upper_percentile = (1 - alpha / 2) * 100
+            
+            ci_lower = np.percentile(bootstrap_rates, lower_percentile)
+            ci_upper = np.percentile(bootstrap_rates, upper_percentile)
+            
+            # Statistical significance test
+            # H0: learning rate = 0 (no cost reduction)
+            # H1: learning rate > 0 (cost declining)
+            t_stat = learning_rate / (std_err / (2 ** slope * np.log(2))) if slope < 0 else 0
+            p_value_one_tailed = 1 - stats.t.cdf(abs(t_stat), df=len(x)-2)
+            
+            return {
+                "learning_rate": float(learning_rate),
+                "confidence_interval": {
+                    "lower": float(ci_lower),
+                    "upper": float(ci_upper),
+                    "confidence_level": confidence_level
+                },
+                "r_squared": float(r_value ** 2),
+                "p_value": float(p_value),
+                "p_value_significance_test": float(p_value_one_tailed),
+                "statistically_significant": p_value_one_tailed < 0.05,
+                "n_samples": len(x),
+                "standard_error": float(std_err),
+                "interpretation": (
+                    f"Learning rate: {learning_rate*100:.1f}% per doubling "
+                    f"(95% CI: [{ci_lower*100:.1f}%, {ci_upper*100:.1f}%]). "
+                    f"{'Statistically significant' if p_value_one_tailed < 0.05 else 'Not statistically significant'} "
+                    f"cost decline (p={p_value_one_tailed:.4f})."
+                )
+            }
+        else:
+            return {"error": "Bootstrap failed"}
+            
+    except Exception as e:
+        return {"error": f"Analysis failed: {str(e)}"}
+
+
+def detect_statistical_outliers_advanced(df: pd.DataFrame, method: str = "grubbs") -> Dict[str, Any]:
+    """
+    Advanced outlier detection with hypothesis testing (Grubbs, Dixon, etc.)
+    """
+    from scipy import stats
+    import numpy as np
+    
+    outliers = {}
+    
+    if df.empty or 'value' not in df.columns:
+        return outliers
+    
+    grouping_cols = []
+    if 'product_name' in df.columns:
+        grouping_cols.append('product_name')
+    if 'region' in df.columns:
+        grouping_cols.append('region')
+    
+    if not grouping_cols:
+        return outliers
+    
+    for group_key, group in df.groupby(grouping_cols, dropna=False):
+        values = pd.to_numeric(group['value'], errors='coerce').dropna()
+        
+        if len(values) < 3:
+            continue
+        
+        if method == "grubbs":
+            # Grubbs test for outliers (assumes normal distribution)
+            mean = values.mean()
+            std = values.std()
+            
+            if std == 0:
+                continue
+            
+            # Calculate Grubbs statistic for each point
+            grubbs_stats = np.abs((values - mean) / std)
+            max_grubbs = grubbs_stats.max()
+            
+            # Critical value for Grubbs test
+            n = len(values)
+            alpha = 0.05
+            t_critical = stats.t.ppf(1 - alpha / (2 * n), n - 2)
+            grubbs_critical = ((n - 1) / np.sqrt(n)) * np.sqrt(t_critical ** 2 / (n - 2 + t_critical ** 2))
+            
+            if max_grubbs > grubbs_critical:
+                # Outlier detected
+                outlier_idx = grubbs_stats.idxmax()
+                
+                if isinstance(group_key, tuple):
+                    key = "_".join(str(k) for k in group_key)
+                else:
+                    key = str(group_key)
+                
+                outliers[key] = [{
+                    'index': int(outlier_idx),
+                    'value': float(values.loc[outlier_idx]),
+                    'grubbs_statistic': float(max_grubbs),
+                    'critical_value': float(grubbs_critical),
+                    'p_value': f"< {alpha}",
+                    'test': 'Grubbs',
+                    'significant': True
+                }]
+    
+    return outliers
+
+
+def calculate_statistical_power(df: pd.DataFrame, product: str, effect_size: float = 0.5) -> Dict[str, Any]:
+    """
+    Calculate statistical power for Wright's Law analysis
+    """
+    from scipy import stats
+    
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    n = len(sub)
+    
+    if n < 3:
+        return {"error": "Insufficient data"}
+    
+    # Calculate power for detecting correlation
+    # Effect size: small=0.1, medium=0.3, large=0.5
+    alpha = 0.05
+    
+    # Using correlation power analysis
+    z_alpha = stats.norm.ppf(1 - alpha/2)
+    z_beta = 0.84  # 80% power
+    
+    # Fisher z-transformation
+    z_r = 0.5 * np.log((1 + effect_size) / (1 - effect_size))
+    
+    # Required sample size for given power
+    n_required = int(((z_alpha + z_beta) / z_r) ** 2 + 3)
+    
+    # Actual power with current sample size
+    z_stat = z_r * np.sqrt(n - 3)
+    actual_power = 1 - stats.norm.cdf(z_alpha - z_stat)
+    
+    return {
+        "sample_size": n,
+        "required_sample_size": n_required,
+        "statistical_power": float(actual_power),
+        "effect_size": effect_size,
+        "sufficient_power": actual_power >= 0.80,
+        "interpretation": (
+            f"Current sample size (n={n}) provides {actual_power*100:.1f}% power "
+            f"to detect medium-sized effects. "
+            f"{'Sufficient' if actual_power >= 0.80 else f'Need {n_required-n} more data points'} "
+            f"for 80% statistical power."
+        )
+    }
+
+# ================================================================================
+# TONY SEBA FRAMEWORK ENHANCEMENTS - TIPPING POINT DETECTION
+# ================================================================================
+
+def detect_tipping_point(df: pd.DataFrame, product: str) -> Dict[str, Any]:
+    """
+    Detect if technology has crossed critical tipping point (10% adoption).
+    Tony Seba: After 10% adoption, technologies typically reach 90% in <10 years.
+    """
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    # Check if adoption/deployment data
+    is_adoption = False
+    if 'metric' in sub.columns and len(sub) > 0:
+        metric_str = str(sub['metric'].iloc[0]).lower()
+        is_adoption = any(term in metric_str for term in ['adoption', 'sales', 'penetration', 'share', 'fleet'])
+    
+    if not is_adoption or len(sub) < 3:
+        return {"error": "Not applicable - requires adoption/deployment data"}
+    
+    try:
+        # Sort by year
+        sub = sub.sort_values('year').copy()
+        years = sub['year'].values
+        values = sub['value'].values
+        
+        # Find if crossed 10% threshold
+        tipping_point_year = None
+        tipping_point_value = None
+        
+        for i, (year, value) in enumerate(zip(years, values)):
+            # Assume values are percentages or market shares
+            # Normalize if needed
+            if value > 1.0:  # If in percentage form (e.g., 10 not 0.10)
+                value = value / 100.0
+            
+            if value >= 0.10 and tipping_point_year is None:
+                tipping_point_year = int(year)
+                tipping_point_value = float(value)
+                break
+        
+        if tipping_point_year:
+            logger.info(f"Tipping point detected for {product} in {tipping_point_year}")
+            # Calculate years to 90%
+            reached_90 = False
+            years_to_90 = None
+            
+            for year, value in zip(years, values):
+                if value > 1.0:
+                    value = value / 100.0
+                
+                if value >= 0.90:
+                    years_to_90 = int(year) - tipping_point_year
+                    reached_90 = True
+                    break
+            
+            # Project if not yet reached 90%
+            if not reached_90 and len(years) >= 3:
+                # Calculate growth rate after tipping point
+                post_tipping = sub[sub['year'] >= tipping_point_year]
+                if len(post_tipping) >= 2:
+                    growth_values = post_tipping['value'].values
+                    growth_years = post_tipping['year'].values
+                    
+                    if len(growth_values) >= 2:
+                        annual_growth = np.mean([
+                            (growth_values[i] - growth_values[i-1]) / growth_values[i-1]
+                            for i in range(1, len(growth_values))
+                            if growth_values[i-1] > 0
+                        ])
+                        
+                        # Project years to 90%
+                        current_value = values[-1]
+                        if current_value > 1.0:
+                            current_value = current_value / 100.0
+                        
+                        if annual_growth > 0 and current_value < 0.90:
+                            years_needed = np.log(0.90 / current_value) / np.log(1 + annual_growth)
+                            years_to_90 = int(np.ceil(years_needed))
+            
+            # Seba's prediction: 10% → 90% in <10 years
+            meets_seba_pattern = years_to_90 is not None and years_to_90 <= 10
+            
+            return {
+                "tipping_point_crossed": True,
+                "tipping_point_year": tipping_point_year,
+                "tipping_point_value": tipping_point_value,
+                "years_to_90_percent": years_to_90,
+                "reached_90_percent": reached_90,
+                "meets_seba_pattern": meets_seba_pattern,
+                "interpretation": (
+                    f"Tipping point (10% adoption) crossed in {tipping_point_year}. "
+                    f"{'Reached 90% in ' + str(years_to_90) + ' years - ' if reached_90 else 'Projected to reach 90% in ' + str(years_to_90) + ' years - ' if years_to_90 else ''}"
+                    f"{'MEETS' if meets_seba_pattern else 'DOES NOT MEET'} Seba's <10 year pattern."
+                )
+            }
+        else:
+            # Not yet at tipping point
+            current_value = values[-1]
+            if current_value > 1.0:
+                current_value = current_value / 100.0
+            
+            return {
+                "tipping_point_crossed": False,
+                "current_adoption": current_value,
+                "current_year": int(years[-1]),
+                "interpretation": f"Not yet reached tipping point (10% adoption). Current: {current_value*100:.1f}%"
+            }
+    
+    except Exception as e:
+        return {"error": f"Analysis failed: {str(e)}"}
+
+
+def analyze_convergence(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Analyze if multiple S-curves are converging (multi-technology disruption).
+    Tony Seba: When multiple disruptive technologies converge, disruption accelerates.
+    """
+    if df.empty or 'product_name' not in df.columns:
+        return {"error": "Insufficient data"}
+    
+    products = df['product_name'].unique()
+    
+    if len(products) < 2:
+        return {"error": "Need multiple products for convergence analysis"}
+    
+    try:
+        convergence_data = []
+        
+        # Get latest year data for each product
+        latest_year = df['year'].max()
+        recent_data = df[df['year'] >= latest_year - 3]  # Last 3 years
+        
+        for product in products:
+            product_data = recent_data[recent_data['product_name'] == product]
+            
+            if not product_data.empty:
+                avg_value = product_data['value'].mean()
+                growth = None
+                
+                # Calculate growth rate
+                product_historical = df[df['product_name'] == product].sort_values('year')
+                if len(product_historical) >= 2:
+                    first_val = product_historical['value'].iloc[0]
+                    last_val = product_historical['value'].iloc[-1]
+                    years_span = product_historical['year'].iloc[-1] - product_historical['year'].iloc[0]
+                    
+                    if first_val > 0 and years_span > 0:
+                        growth = ((last_val / first_val) ** (1 / years_span)) - 1
+                
+                convergence_data.append({
+                    'product': product,
+                    'recent_value': avg_value,
+                    'growth_rate': growth
+                })
+        
+        # Check for convergence patterns
+        high_growth_products = [
+            p for p in convergence_data 
+            if p['growth_rate'] and p['growth_rate'] > 0.20  # >20% annual growth
+        ]
+        
+        is_converging = len(high_growth_products) >= 2
+        
+        return {
+            "converging_technologies": is_converging,
+            "high_growth_count": len(high_growth_products),
+            "technologies": convergence_data,
+            "interpretation": (
+                f"{'CONVERGENCE DETECTED' if is_converging else 'No convergence'}: "
+                f"{len(high_growth_products)} technologies with >20% growth. "
+                f"{'Multiple S-curves accelerating disruption' if is_converging else 'Single technology trajectory'}"
+            )
+        }
+    
+    except Exception as e:
+        return {"error": f"Analysis failed: {str(e)}"}
+
+
+def track_cost_parity_forecast(df: pd.DataFrame, product: str, 
+                               parity_threshold: float = 70.0) -> Dict[str, Any]:
+    """
+    Track when technology costs will reach parity with incumbents.
+    Critical for disruption timing predictions.
+    """
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    # Check if cost data
+    is_cost = False
+    if 'unit' in sub.columns and len(sub) > 0:
+        unit_str = str(sub['unit'].iloc[0]).lower()
+        is_cost = any(ind in unit_str for ind in ['$', 'cost', 'price', '/mwh', '/kwh'])
+    
+    if not is_cost or len(sub) < 3:
+        return {"error": "Not applicable - requires cost data"}
+    
+    try:
+        sub = sub.sort_values('year').copy()
+        years = sub['year'].values
+        costs = sub['value'].values
+        
+        # Check if already at parity
+        at_parity = False
+        parity_year = None
+        
+        for year, cost in zip(years, costs):
+            if cost <= parity_threshold:
+                at_parity = True
+                parity_year = int(year)
+                break
+        
+        if at_parity:
+            return {
+                "at_parity": True,
+                "parity_year": parity_year,
+                "current_cost": float(costs[-1]),
+                "parity_threshold": parity_threshold,
+                "interpretation": f"Cost parity achieved in {parity_year}. Current: ${costs[-1]:.2f}/MWh"
+            }
+        else:
+            # Forecast parity
+            if len(years) >= 3:
+                # Fit exponential decline
+                from scipy import stats
+                slope, intercept, r_value, p_value, std_err = stats.linregress(years, np.log(costs))
+                
+                # Project to parity
+                target_log = np.log(parity_threshold)
+                parity_year_forecast = (target_log - intercept) / slope
+                
+                years_until_parity = int(np.ceil(parity_year_forecast - years[-1]))
+                
+                return {
+                    "at_parity": False,
+                    "current_cost": float(costs[-1]),
+                    "parity_threshold": parity_threshold,
+                    "forecast_parity_year": int(parity_year_forecast),
+                    "years_until_parity": years_until_parity,
+                    "forecast_confidence": float(r_value ** 2),
+                    "interpretation": (
+                        f"Forecast: Cost parity (${parity_threshold:.0f}/MWh) in ~{int(parity_year_forecast)} "
+                        f"({years_until_parity} years from now). "
+                        f"Current: ${costs[-1]:.2f}/MWh. Confidence: {r_value**2:.1%}"
+                    )
+                }
+        
+    except Exception as e:
+        return {"error": f"Forecast failed: {str(e)}"}
+
+# ================================================================================
+# TIME SERIES GAP HANDLING & INTERPOLATION
+# ================================================================================
+
+def detect_and_handle_time_gaps(df: pd.DataFrame,
+                                max_gap_years: int = 3,
+                                interpolation_method: str = "linear") -> Dict[str, Any]:
+    """
+    Detect gaps in time series and optionally interpolate missing years.
+    
+    Args:
+        df: DataFrame with time series data
+        max_gap_years: Maximum gap size to interpolate (larger gaps flagged only)
+        interpolation_method: 'linear', 'polynomial', 'spline', or 'forward'
+    
+    Returns:
+        Dict with gap analysis and optionally interpolated data
+    """
+    if df.empty or 'year' not in df.columns or 'product_name' not in df.columns:
+        return {"error": "Invalid DataFrame structure"}
+    
+    gap_analysis = []
+    interpolated_data = []
+    
+    for (product, region), group in df.groupby(['product_name', 'region']):
+        # Sort by year
+        group_sorted = group.sort_values('year').copy()
+        years = group_sorted['year'].values
+        
+        if len(years) < 2:
+            continue
+        
+        # Find gaps
+        gaps = []
+        for i in range(1, len(years)):
+            gap_size = years[i] - years[i-1] - 1
+            if gap_size > 0:
+                gaps.append({
+                    'product': product,
+                    'region': region,
+                    'start_year': int(years[i-1]),
+                    'end_year': int(years[i]),
+                    'gap_years': int(gap_size),
+                    'can_interpolate': gap_size <= max_gap_years
+                })
+        
+        if gaps:
+            gap_analysis.extend(gaps)
+            
+            # Interpolate if requested and gap is small enough
+            for gap in gaps:
+                if gap['can_interpolate'] and interpolation_method != "none":
+                    # Get surrounding values
+                    start_val = group_sorted[group_sorted['year'] == gap['start_year']]['value'].iloc[0]
+                    end_val = group_sorted[group_sorted['year'] == gap['end_year']]['value'].iloc[0]
+                    
+                    # Generate interpolated years
+                    missing_years = range(gap['start_year'] + 1, gap['end_year'])
+                    
+                    if interpolation_method == "linear":
+                        # Linear interpolation
+                        step = (end_val - start_val) / (gap['gap_years'] + 1)
+                        interpolated_vals = [start_val + step * (j + 1) for j in range(gap['gap_years'])]
+                    
+                    elif interpolation_method == "forward":
+                        # Forward fill
+                        interpolated_vals = [start_val] * gap['gap_years']
+                    
+                    elif interpolation_method == "spline":
+                        # Cubic spline (requires more surrounding points)
+                        if len(group_sorted) >= 4:
+                            from scipy.interpolate import CubicSpline
+                            cs = CubicSpline(group_sorted['year'].values, group_sorted['value'].values)
+                            interpolated_vals = [float(cs(year)) for year in missing_years]
+                        else:
+                            # Fallback to linear
+                            step = (end_val - start_val) / (gap['gap_years'] + 1)
+                            interpolated_vals = [start_val + step * (j + 1) for j in range(gap['gap_years'])]
+                    
+                    else:
+                        # Default to linear
+                        step = (end_val - start_val) / (gap['gap_years'] + 1)
+                        interpolated_vals = [start_val + step * (j + 1) for j in range(gap['gap_years'])]
+                    
+                    # Store interpolated data
+                    for year, val in zip(missing_years, interpolated_vals):
+                        interpolated_data.append({
+                            'product_name': product,
+                            'region': region,
+                            'year': year,
+                            'value': val,
+                            'interpolated': True,
+                            'method': interpolation_method
+                        })
+    
+    return {
+        "gaps_found": len(gap_analysis),
+        "gaps_detail": gap_analysis,
+        "interpolated_points": len(interpolated_data),
+        "interpolated_data": interpolated_data,
+        "method_used": interpolation_method,
+        "interpretation": (
+            f"Found {len(gap_analysis)} gaps in time series. "
+            f"{len([g for g in gap_analysis if g['can_interpolate']])} gaps â‰¤{max_gap_years} years (interpolatable). "
+            f"{len([g for g in gap_analysis if not g['can_interpolate']])} gaps >{max_gap_years} years (too large for interpolation). "
+            f"Generated {len(interpolated_data)} interpolated data points using {interpolation_method} method."
+        )
+    }
+
+
+def harmonize_mixed_frequencies(df: pd.DataFrame,
+                                target_frequency: str = "annual") -> Dict[str, Any]:
+    """
+    Harmonize mixed frequency data (monthly, quarterly, annual) to common frequency.
+    
+    Args:
+        df: DataFrame with mixed frequency data
+        target_frequency: 'annual', 'quarterly', or 'monthly'
+    
+    Returns:
+        Dict with harmonized DataFrame and conversion log
+    """
+    if df.empty or 'year' not in df.columns:
+        return {"error": "Invalid DataFrame structure"}
+    
+    harmonized_rows = []
+    conversion_log = []
+    
+    # Detect frequency for each product/region series
+    for (product, region), group in df.groupby(['product_name', 'region']):
+        years = group['year'].values
+        
+        # Detect frequency based on year spacing
+        if len(years) < 2:
+            continue
+        
+        year_diffs = np.diff(sorted(years))
+        avg_diff = np.mean(year_diffs)
+        
+        # Classify frequency
+        if avg_diff < 0.1:  # Monthly or more frequent
+            detected_freq = "monthly"
+            periods_per_year = 12
+        elif 0.2 < avg_diff < 0.3:  # Quarterly
+            detected_freq = "quarterly"
+            periods_per_year = 4
+        else:  # Annual or less frequent
+            detected_freq = "annual"
+            periods_per_year = 1
+        
+        # If already at target frequency, keep as-is
+        if detected_freq == target_frequency:
+            harmonized_rows.extend(group.to_dict('records'))
+            continue
+        
+        # Convert to target frequency
+        if target_frequency == "annual":
+            # Aggregate to annual
+            if detected_freq in ["monthly", "quarterly"]:
+                # Group by year and aggregate
+                group_annual = group.copy()
+                group_annual['year'] = group_annual['year'].astype(int)
+                
+                # Determine aggregation method based on metric
+                metric = str(group['metric'].iloc[0]).lower()
+                
+                if any(term in metric for term in ['price', 'cost', 'lcoe', 'average']):
+                    # For prices/costs, use mean
+                    agg_method = 'mean'
+                elif any(term in metric for term in ['capacity', 'fleet', 'stock']):
+                    # For stocks, use end-of-period
+                    agg_method = 'last'
+                else:
+                    # For flows (generation, production), use sum
+                    agg_method = 'sum'
+                
+                if agg_method == 'mean':
+                    aggregated = group_annual.groupby('year').agg({
+                        'value': 'mean',
+                        'product_name': 'first',
+                        'region': 'first',
+                        'unit': 'first',
+                        'metric': 'first'
+                    }).reset_index()
+                elif agg_method == 'last':
+                    aggregated = group_annual.groupby('year').agg({
+                        'value': 'last',
+                        'product_name': 'first',
+                        'region': 'first',
+                        'unit': 'first',
+                        'metric': 'first'
+                    }).reset_index()
+                else:  # sum
+                    aggregated = group_annual.groupby('year').agg({
+                        'value': 'sum',
+                        'product_name': 'first',
+                        'region': 'first',
+                        'unit': 'first',
+                        'metric': 'first'
+                    }).reset_index()
+                
+                harmonized_rows.extend(aggregated.to_dict('records'))
+                
+                conversion_log.append({
+                    'product': product,
+                    'region': region,
+                    'from_frequency': detected_freq,
+                    'to_frequency': target_frequency,
+                    'aggregation_method': agg_method,
+                    'original_points': len(group),
+                    'harmonized_points': len(aggregated)
+                })
+    
+    harmonized_df = pd.DataFrame(harmonized_rows)
+    
+    return {
+        "harmonized_df": harmonized_df,
+        "conversions_applied": len(conversion_log),
+        "conversion_log": conversion_log,
+        "target_frequency": target_frequency,
+        "interpretation": (
+            f"Harmonized {len(conversion_log)} series to {target_frequency} frequency. "
+            f"Converted {sum(c['original_points'] for c in conversion_log)} data points to "
+            f"{len(harmonized_df)} harmonized points."
+        )
+    }
+
+
+def impute_missing_values(df: pd.DataFrame,
+                         method: str = "interpolation",
+                         max_impute_pct: float = 0.10) -> Dict[str, Any]:
+    """
+    Intelligent missing data imputation using appropriate methods for data type.
+    
+    Args:
+        df: DataFrame with missing values
+        method: 'interpolation', 'forward_fill', 'wright_law', 'scurve'
+        max_impute_pct: Maximum percentage of series to impute (default 10%)
+    
+    Returns:
+        Dict with imputed DataFrame and imputation log
+    """
+    if df.empty:
+        return {"error": "Empty DataFrame"}
+    
+    imputed_rows = []
+    imputation_log = []
+    quality_flags = []
+    
+    for (product, region), group in df.groupby(['product_name', 'region']):
+        group_sorted = group.sort_values('year').copy()
+        
+        # Count missing values
+        total_points = len(group_sorted)
+        missing_points = group_sorted['value'].isna().sum()
+        missing_pct = missing_points / total_points if total_points > 0 else 0
+        
+        # Check if imputation is allowed
+        if missing_pct > max_impute_pct:
+            quality_flags.append({
+                'product': product,
+                'region': region,
+                'missing_pct': missing_pct * 100,
+                'reason': f"Exceeds {max_impute_pct*100}% imputation limit"
+            })
+            # Keep original data
+            imputed_rows.extend(group_sorted.to_dict('records'))
+            continue
+        
+        if missing_points == 0:
+            # No missing values
+            imputed_rows.extend(group_sorted.to_dict('records'))
+            continue
+        
+        # Detect data type for intelligent imputation
+        unit = str(group_sorted['unit'].iloc[0]).lower()
+        metric = str(group_sorted['metric'].iloc[0]).lower()
+        
+        is_cost = any(ind in unit for ind in ['$', 'usd', 'cost', 'price'])
+        is_adoption = any(ind in metric for ind in ['adoption', 'sales', 'capacity', 'generation'])
+        
+        # Apply appropriate imputation method
+        if method == "wright_law" and is_cost:
+            # Use Wright's Law projection for cost data
+            # Fit exponential decline to known data
+            known_data = group_sorted[group_sorted['value'].notna()]
+            if len(known_data) >= 3:
+                from scipy import stats
+                years_known = known_data['year'].values
+                values_known = known_data['value'].values
+                
+                try:
+                    slope, intercept, _, _, _ = stats.linregress(years_known, np.log(values_known))
+                    
+                    # Impute missing years
+                    for idx, row in group_sorted.iterrows():
+                        if pd.isna(row['value']):
+                            year = row['year']
+                            imputed_value = np.exp(slope * year + intercept)
+                            group_sorted.at[idx, 'value'] = imputed_value
+                            imputation_log.append({
+                                'product': product,
+                                'region': region,
+                                'year': int(year),
+                                'method': 'wright_law',
+                                'imputed_value': imputed_value
+                            })
+                except:
+                    # Fallback to linear interpolation
+                    group_sorted['value'] = group_sorted['value'].interpolate(method='linear')
+        
+        elif method == "scurve" and is_adoption:
+            # Use S-curve fitting for adoption data
+            known_data = group_sorted[group_sorted['value'].notna()]
+            if len(known_data) >= 4:
+                try:
+                    from scipy.optimize import curve_fit
+                    
+                    def sigmoid(x, L, k, x0):
+                        return L / (1 + np.exp(-k * (x - x0)))
+                    
+                    years_known = known_data['year'].values
+                    values_known = known_data['value'].values
+                    
+                    # Fit sigmoid
+                    popt, _ = curve_fit(sigmoid, years_known, values_known,
+                                       p0=[values_known.max(), 0.5, years_known.mean()],
+                                       maxfev=5000)
+                    
+                    # Impute missing years
+                    for idx, row in group_sorted.iterrows():
+                        if pd.isna(row['value']):
+                            year = row['year']
+                            imputed_value = sigmoid(year, *popt)
+                            group_sorted.at[idx, 'value'] = imputed_value
+                            imputation_log.append({
+                                'product': product,
+                                'region': region,
+                                'year': int(year),
+                                'method': 'scurve',
+                                'imputed_value': imputed_value
+                            })
+                except:
+                    # Fallback to linear interpolation
+                    group_sorted['value'] = group_sorted['value'].interpolate(method='linear')
+        
+        else:
+            # Default: linear interpolation
+            group_sorted['value'] = group_sorted['value'].interpolate(method='linear')
+            
+            for idx, row in group_sorted.iterrows():
+                if idx in group.index and pd.isna(group.at[idx, 'value']) and pd.notna(group_sorted.at[idx, 'value']):
+                    imputation_log.append({
+                        'product': product,
+                        'region': region,
+                        'year': int(row['year']),
+                        'method': 'linear',
+                        'imputed_value': group_sorted.at[idx, 'value']
+                    })
+        
+        imputed_rows.extend(group_sorted.to_dict('records'))
+    
+    imputed_df = pd.DataFrame(imputed_rows)
+    
+    return {
+        "imputed_df": imputed_df,
+        "imputation_count": len(imputation_log),
+        "imputation_log": imputation_log,
+        "quality_flags": quality_flags,
+        "method_used": method,
+        "interpretation": (
+            f"Imputed {len(imputation_log)} missing values using {method} method. "
+            f"{len(quality_flags)} series flagged for exceeding imputation limits."
+        )
+    }
+# ================================================================================
+# SEBA-SPECIFIC DISRUPTION METRICS
+# ================================================================================
+
+def calculate_disruption_velocity(df: pd.DataFrame, product: str) -> Dict[str, Any]:
+    """
+    Calculate disruption velocity - how fast is the technology disrupting incumbents?
+    
+    Seba Framework: Exponential disruption happens at >30% annual growth.
+    
+    Returns velocity classification:
+    - Slow: <5% annual growth
+    - Moderate: 5-15% annual growth
+    - Rapid: 15-30% annual growth
+    - Exponential: >30% annual growth
+    """
+    from validation_constants import (
+        DISRUPTION_VELOCITY_SLOW, DISRUPTION_VELOCITY_MODERATE,
+        DISRUPTION_VELOCITY_RAPID, DISRUPTION_VELOCITY_EXPONENTIAL
+    )
+    
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    if len(sub) < 3:
+        return {"error": "Insufficient data for velocity calculation"}
+    
+    try:
+        sub = sub.sort_values('year').copy()
+        years = sub['year'].values
+        values = sub['value'].values
+        
+        # Calculate year-over-year growth rates
+        growth_rates = []
+        for i in range(1, len(values)):
+            if values[i-1] > 0:
+                growth = (values[i] - values[i-1]) / values[i-1]
+                growth_rates.append(growth)
+        
+        if not growth_rates:
+            return {"error": "Cannot calculate growth rates"}
+        
+        # Recent velocity (last 3 years)
+        recent_velocity = np.mean(growth_rates[-3:]) if len(growth_rates) >= 3 else np.mean(growth_rates)
+        
+        # Historical velocity (all years)
+        historical_velocity = np.mean(growth_rates)
+        
+        # Velocity classification
+        if recent_velocity >= DISRUPTION_VELOCITY_EXPONENTIAL:
+            velocity_class = "Exponential"
+            disruption_risk = "CRITICAL"
+        elif recent_velocity >= DISRUPTION_VELOCITY_RAPID:
+            velocity_class = "Rapid"
+            disruption_risk = "HIGH"
+        elif recent_velocity >= DISRUPTION_VELOCITY_MODERATE:
+            velocity_class = "Moderate"
+            disruption_risk = "MEDIUM"
+        elif recent_velocity >= DISRUPTION_VELOCITY_SLOW:
+            velocity_class = "Slow"
+            disruption_risk = "LOW"
+        else:
+            velocity_class = "Declining"
+            disruption_risk = "NONE"
+        
+        # Acceleration check
+        early_velocity = np.mean(growth_rates[:len(growth_rates)//2])
+        late_velocity = np.mean(growth_rates[len(growth_rates)//2:])
+        is_accelerating = late_velocity > early_velocity
+        
+        return {
+            "recent_velocity": float(recent_velocity),
+            "historical_velocity": float(historical_velocity),
+            "velocity_class": velocity_class,
+            "disruption_risk": disruption_risk,
+            "is_accelerating": is_accelerating,
+            "growth_rates_by_year": [
+                {"year": int(years[i+1]), "growth": float(growth_rates[i])}
+                for i in range(len(growth_rates))
+            ],
+            "interpretation": (
+                f"Disruption velocity: {velocity_class} ({recent_velocity*100:.1f}% annual growth). "
+                f"Risk to incumbents: {disruption_risk}. "
+                f"{'Acceleration detected - disruption intensifying' if is_accelerating else 'Stable velocity'}. "
+                f"Seba Framework: {'EXPONENTIAL DISRUPTION PHASE' if recent_velocity >= DISRUPTION_VELOCITY_EXPONENTIAL else 'Pre-exponential phase'}."
+            )
+        }
+    
+    except Exception as e:
+        return {"error": f"Velocity calculation failed: {str(e)}"}
+
+
+def calculate_incumbent_vulnerability(df: pd.DataFrame, 
+                                     incumbent_product: str,
+                                     disruptor_product: str) -> Dict[str, Any]:
+    """
+    Calculate incumbent vulnerability to disruption.
+    
+    Factors:
+    1. Cost gap: How much cheaper is disruptor?
+    2. Adoption rate: How fast is disruptor growing?
+    3. Performance parity: Has disruptor matched key metrics?
+    4. Incumbent decline: Is incumbent losing market share?
+    
+    Returns vulnerability score: 0.0 (safe) to 1.0 (critical risk)
+    """
+    from validation_constants import (
+        INCUMBENT_VULNERABILITY_LOW, INCUMBENT_VULNERABILITY_MEDIUM,
+        INCUMBENT_VULNERABILITY_HIGH
+    )
+    
+    try:
+        incumbent_df = df[df['product_name'] == incumbent_product]
+        disruptor_df = df[df['product_name'] == disruptor_product]
+        
+        if incumbent_df.empty or disruptor_df.empty:
+            return {"error": "Product data not found"}
+        
+        vulnerability_score = 0.0
+        factors = {}
+        
+        # Factor 1: Cost Gap (if both are cost data)
+        incumbent_is_cost = any(ind in str(incumbent_df['unit'].iloc[0]).lower() 
+                               for ind in ['$', 'cost', 'price'])
+        disruptor_is_cost = any(ind in str(disruptor_df['unit'].iloc[0]).lower() 
+                               for ind in ['$', 'cost', 'price'])
+        
+        if incumbent_is_cost and disruptor_is_cost:
+            incumbent_cost = incumbent_df['value'].iloc[-1]
+            disruptor_cost = disruptor_df['value'].iloc[-1]
+            
+            if incumbent_cost > 0:
+                cost_advantage = (incumbent_cost - disruptor_cost) / incumbent_cost
+                factors['cost_advantage'] = float(cost_advantage)
+                
+                # >50% cost advantage = 0.4 vulnerability points
+                if cost_advantage > 0.50:
+                    vulnerability_score += 0.4
+                elif cost_advantage > 0.30:
+                    vulnerability_score += 0.3
+                elif cost_advantage > 0.10:
+                    vulnerability_score += 0.2
+        
+        # Factor 2: Disruptor Growth Rate (0.3 points)
+        disruptor_sorted = disruptor_df.sort_values('year')
+        if len(disruptor_sorted) >= 3:
+            recent_growth = []
+            values = disruptor_sorted['value'].values
+            for i in range(1, min(4, len(values))):
+                if values[i-1] > 0:
+                    growth = (values[i] - values[i-1]) / values[i-1]
+                    recent_growth.append(growth)
+            
+            if recent_growth:
+                avg_growth = np.mean(recent_growth)
+                factors['disruptor_growth_rate'] = float(avg_growth)
+                
+                if avg_growth > 0.50:  # >50% growth
+                    vulnerability_score += 0.3
+                elif avg_growth > 0.30:
+                    vulnerability_score += 0.2
+                elif avg_growth > 0.15:
+                    vulnerability_score += 0.1
+        
+        # Factor 3: Incumbent Decline (0.3 points)
+        incumbent_sorted = incumbent_df.sort_values('year')
+        if len(incumbent_sorted) >= 3:
+            recent_change = []
+            values = incumbent_sorted['value'].values
+            for i in range(1, min(4, len(values))):
+                if values[i-1] > 0:
+                    change = (values[i] - values[i-1]) / values[i-1]
+                    recent_change.append(change)
+            
+            if recent_change:
+                avg_change = np.mean(recent_change)
+                factors['incumbent_trend'] = float(avg_change)
+                
+                if avg_change < -0.10:  # Declining >10%
+                    vulnerability_score += 0.3
+                elif avg_change < -0.05:
+                    vulnerability_score += 0.2
+                elif avg_change < 0:
+                    vulnerability_score += 0.1
+        
+        # Classify vulnerability
+        if vulnerability_score >= INCUMBENT_VULNERABILITY_HIGH:
+            vulnerability_class = "CRITICAL"
+            recommendation = "Immediate strategic response required. Disruption imminent."
+        elif vulnerability_score >= INCUMBENT_VULNERABILITY_MEDIUM:
+            vulnerability_class = "HIGH"
+            recommendation = "Significant threat. Accelerate transformation efforts."
+        elif vulnerability_score >= INCUMBENT_VULNERABILITY_LOW:
+            vulnerability_class = "MEDIUM"
+            recommendation = "Monitor closely. Begin defensive strategies."
+        else:
+            vulnerability_class = "LOW"
+            recommendation = "Disruptor not yet critical threat."
+        
+        return {
+            "incumbent": incumbent_product,
+            "disruptor": disruptor_product,
+            "vulnerability_score": float(vulnerability_score),
+            "vulnerability_class": vulnerability_class,
+            "factors": factors,
+            "recommendation": recommendation,
+            "interpretation": (
+                f"Incumbent vulnerability: {vulnerability_class} (score: {vulnerability_score:.2f}/1.0). "
+                f"{recommendation}"
+            )
+        }
+    
+    except Exception as e:
+        return {"error": f"Vulnerability calculation failed: {str(e)}"}
+
+
+def identify_technology_lifecycle_stage(df: pd.DataFrame, product: str) -> Dict[str, Any]:
+    """
+    Identify where technology is in its lifecycle.
+    
+    Stages:
+    1. Emerging (0-1% adoption, <5 years)
+    2. Growth (1-10% adoption, 5-10 years)
+    3. Mainstream (10-50% adoption, 10-20 years)
+    4. Mature (>50% adoption, >20 years)
+    """
+    from validation_constants import LIFECYCLE_THRESHOLDS
+    
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    if len(sub) < 2:
+        return {"error": "Insufficient data"}
+    
+    try:
+        sub = sub.sort_values('year')
+        years = sub['year'].values
+        values = sub['value'].values
+        
+        # Calculate age
+        first_year = int(years[0])
+        latest_year = int(years[-1])
+        age_years = latest_year - first_year
+        
+        # Estimate adoption level (if percentage data)
+        latest_value = float(values[-1])
+        
+        # Determine stage
+        if age_years <= LIFECYCLE_THRESHOLDS['emerging']['age_years']:
+            if latest_value < 0.01:
+                stage = "Emerging"
+                seba_insight = "Technology in innovation phase. High risk, high potential."
+            else:
+                stage = "Early Growth"
+                seba_insight = "Rapid growth beginning. Critical adoption phase."
+        elif age_years <= LIFECYCLE_THRESHOLDS['growth']['age_years']:
+            if latest_value < 0.10:
+                stage = "Growth"
+                seba_insight = "Pre-tipping point. Approaching 10% threshold for exponential growth."
+            else:
+                stage = "Rapid Growth"
+                seba_insight = "Post-tipping point. Seba's 10%→90% rapid transition phase."
+        elif age_years <= LIFECYCLE_THRESHOLDS['mainstream']['age_years']:
+            stage = "Mainstream"
+            seba_insight = "Technology established. Focus on cost optimization and scale."
+        else:
+            stage = "Mature"
+            seba_insight = "Mature market. Vulnerable to next-generation disruption."
+        
+        return {
+            "product": product,
+            "stage": stage,
+            "age_years": age_years,
+            "first_year": first_year,
+            "latest_year": latest_year,
+            "current_adoption": latest_value,
+            "seba_insight": seba_insight,
+            "interpretation": (
+                f"{product} is in {stage} stage (age: {age_years} years). "
+                f"Current adoption: {latest_value*100 if latest_value < 1 else latest_value:.1f}%. "
+                f"{seba_insight}"
+            )
+        }
+    
+    except Exception as e:
+        return {"error": f"Lifecycle identification failed: {str(e)}"}
+# ================================================================================
+# ADVANCED ANALYTICS - STRUCTURAL BREAKS, FORECASTING, SCENARIOS
+# ================================================================================
+
+def detect_structural_breaks_chow_test(df: pd.DataFrame, product: str,
+                                       breakpoint_year: int = None) -> Dict[str, Any]:
+    """
+    Chow test for structural breaks in time series.
+    Detects if data generation process changed (methodology shift, source change).
+    
+    H0: No structural break (coefficients are same before/after breakpoint)
+    H1: Structural break exists (coefficients differ)
+    """
+    from scipy import stats
+    
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    if len(sub) < 6:  # Need sufficient data points
+        return {"error": "Insufficient data for structural break analysis"}
+    
+    try:
+        sub = sub.sort_values('year').copy()
+        years = sub['year'].values
+        values = sub['value'].values
+        
+        # If no breakpoint specified, test midpoint
+        if breakpoint_year is None:
+            breakpoint_year = int(years[len(years) // 2])
+        
+        # Split data at breakpoint
+        mask_before = sub['year'] < breakpoint_year
+        mask_after = sub['year'] >= breakpoint_year
+        
+        years_before = sub[mask_before]['year'].values
+        values_before = sub[mask_before]['value'].values
+        years_after = sub[mask_after]['year'].values
+        values_after = sub[mask_after]['value'].values
+        
+        if len(years_before) < 3 or len(years_after) < 3:
+            return {"error": "Insufficient data in split periods"}
+        
+        # Fit models
+        # Full model
+        slope_full, intercept_full, r_full, _, _ = stats.linregress(years, values)
+        y_pred_full = slope_full * years + intercept_full
+        rss_full = np.sum((values - y_pred_full) ** 2)
+        
+        # Before model
+        slope_before, intercept_before, _, _, _ = stats.linregress(years_before, values_before)
+        y_pred_before = slope_before * years_before + intercept_before
+        rss_before = np.sum((values_before - y_pred_before) ** 2)
+        
+        # After model
+        slope_after, intercept_after, _, _, _ = stats.linregress(years_after, values_after)
+        y_pred_after = slope_after * years_after + intercept_after
+        rss_after = np.sum((values_after - y_pred_after) ** 2)
+        
+        # Chow test statistic
+        rss_restricted = rss_full
+        rss_unrestricted = rss_before + rss_after
+        
+        n = len(years)
+        k = 2  # Number of parameters (slope, intercept)
+        
+        if rss_unrestricted > 0:
+            chow_stat = ((rss_restricted - rss_unrestricted) / k) / (rss_unrestricted / (n - 2*k))
+            
+            # F-distribution critical value
+            alpha = 0.05
+            df1 = k
+            df2 = n - 2*k
+            f_critical = stats.f.ppf(1 - alpha, df1, df2)
+            
+            # P-value
+            p_value = 1 - stats.f.cdf(chow_stat, df1, df2)
+            
+            structural_break = p_value < alpha
+            
+            return {
+                "structural_break_detected": structural_break,
+                "breakpoint_year": int(breakpoint_year),
+                "chow_statistic": float(chow_stat),
+                "p_value": float(p_value),
+                "f_critical": float(f_critical),
+                "slope_before": float(slope_before),
+                "slope_after": float(slope_after),
+                "slope_change": float(slope_after - slope_before),
+                "interpretation": (
+                    f"{'STRUCTURAL BREAK DETECTED' if structural_break else 'No structural break'} "
+                    f"at {breakpoint_year} (p={p_value:.4f}). "
+                    f"Slope changed from {slope_before:.3f} to {slope_after:.3f}. "
+                    f"{'Likely methodology/source change' if structural_break else 'Data generation consistent'}."
+                )
+            }
+        else:
+            return {"error": "Model fit failed"}
+    
+    except Exception as e:
+        return {"error": f"Chow test failed: {str(e)}"}
+
+
+def forecast_time_series(df: pd.DataFrame, product: str, 
+                        forecast_years: int = 5,
+                        method: str = "exponential") -> Dict[str, Any]:
+    """
+    Time series forecasting using exponential smoothing or ARIMA.
+    Projects future values based on historical trends.
+    """
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    if len(sub) < 3:
+        return {"error": "Insufficient historical data for forecasting"}
+    
+    try:
+        sub = sub.sort_values('year').copy()
+        years = sub['year'].values
+        values = sub['value'].values
+        
+        last_year = int(years[-1])
+        forecast_years_array = np.arange(last_year + 1, last_year + forecast_years + 1)
+        
+        if method == "exponential":
+            # Exponential decay/growth model (good for Wright's Law)
+            from scipy import stats
+            
+            # Fit log-linear model
+            log_values = np.log(values)
+            slope, intercept, r_value, p_value, std_err = stats.linregress(years, log_values)
+            
+            # Forecast
+            log_forecast = slope * forecast_years_array + intercept
+            forecast_values = np.exp(log_forecast)
+            
+            # Confidence intervals (95%)
+            from scipy.stats import t
+            n = len(years)
+            alpha = 0.05
+            t_val = t.ppf(1 - alpha/2, n - 2)
+            
+            # Standard error of forecast
+            se_forecast = std_err * np.sqrt(1 + 1/n + (forecast_years_array - years.mean())**2 / np.sum((years - years.mean())**2))
+            
+            ci_lower = np.exp(log_forecast - t_val * se_forecast)
+            ci_upper = np.exp(log_forecast + t_val * se_forecast)
+            
+            return {
+                "method": "exponential",
+                "forecast_years": forecast_years_array.tolist(),
+                "forecast_values": forecast_values.tolist(),
+                "confidence_interval_lower": ci_lower.tolist(),
+                "confidence_interval_upper": ci_upper.tolist(),
+                "r_squared": float(r_value ** 2),
+                "growth_rate": float(np.exp(slope) - 1),
+                "interpretation": (
+                    f"Forecast using exponential model (R²={r_value**2:.3f}). "
+                    f"Projected {'growth' if slope > 0 else 'decline'} rate: {abs(np.exp(slope)-1)*100:.1f}% per year."
+                )
+            }
+        
+        elif method == "linear":
+            # Simple linear extrapolation
+            from scipy import stats
+            
+            slope, intercept, r_value, p_value, std_err = stats.linregress(years, values)
+            
+            forecast_values = slope * forecast_years_array + intercept
+            
+            # Confidence intervals
+            from scipy.stats import t
+            n = len(years)
+            alpha = 0.05
+            t_val = t.ppf(1 - alpha/2, n - 2)
+            
+            se_forecast = std_err * np.sqrt(1 + 1/n + (forecast_years_array - years.mean())**2 / np.sum((years - years.mean())**2))
+            
+            ci_lower = forecast_values - t_val * se_forecast
+            ci_upper = forecast_values + t_val * se_forecast
+            
+            return {
+                "method": "linear",
+                "forecast_years": forecast_years_array.tolist(),
+                "forecast_values": forecast_values.tolist(),
+                "confidence_interval_lower": ci_lower.tolist(),
+                "confidence_interval_upper": ci_upper.tolist(),
+                "r_squared": float(r_value ** 2),
+                "trend": float(slope),
+                "interpretation": (
+                    f"Linear forecast (R²={r_value**2:.3f}). "
+                    f"Trend: {slope:+.2f} units per year."
+                )
+            }
+        
+    except Exception as e:
+        return {"error": f"Forecast failed: {str(e)}"}
+
+
+def scenario_analysis(df: pd.DataFrame, product: str,
+                     scenarios: Dict[str, float] = None) -> Dict[str, Any]:
+    """
+    Scenario analysis for sensitivity testing.
+    Tests impact of different learning rate assumptions on cost projections.
+    """
+    if scenarios is None:
+        scenarios = {
+            "pessimistic": 0.10,   # 10% learning rate
+            "base_case": 0.20,     # 20% learning rate
+            "optimistic": 0.30     # 30% learning rate
+        }
+    
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    # Check if cost data
+    is_cost = False
+    if 'unit' in sub.columns and len(sub) > 0:
+        unit_str = str(sub['unit'].iloc[0]).lower()
+        is_cost = any(ind in unit_str for ind in ['$', 'cost', 'price'])
+    
+    if not is_cost or len(sub) < 3:
+        return {"error": "Scenario analysis requires cost data"}
+    
+    try:
+        sub = sub.sort_values('year').copy()
+        years = sub['year'].values
+        costs = sub['value'].values
+        
+        last_year = int(years[-1])
+        last_cost = float(costs[-1])
+        
+        # Project 10 years forward under different scenarios
+        projection_years = 10
+        future_years = np.arange(last_year + 1, last_year + projection_years + 1)
+        
+        scenario_results = {}
+        
+        for scenario_name, learning_rate in scenarios.items():
+            # Assume production doubles every 2 years (simplified)
+            doublings = projection_years / 2
+            
+            # Wright's Law: Cost_n = Cost_0 * (2^doublings)^(-learning_rate)
+            cost_multiplier = (2 ** doublings) ** (-learning_rate)
+            final_cost = last_cost * cost_multiplier
+            
+            # Interpolate intermediate years
+            annual_decline = (1 - cost_multiplier) / projection_years
+            projected_costs = [last_cost * (1 - annual_decline * i) for i in range(1, projection_years + 1)]
+            
+            scenario_results[scenario_name] = {
+                "learning_rate": learning_rate,
+                "final_cost": float(final_cost),
+                "cost_reduction": float((last_cost - final_cost) / last_cost),
+                "projected_costs": projected_costs,
+                "years": future_years.tolist()
+            }
+        
+        return {
+            "current_cost": last_cost,
+            "current_year": last_year,
+            "scenarios": scenario_results,
+            "interpretation": (
+                f"Starting from ${last_cost:.2f} in {last_year}, "
+                f"pessimistic scenario: ${scenario_results['pessimistic']['final_cost']:.2f}, "
+                f"base case: ${scenario_results['base_case']['final_cost']:.2f}, "
+                f"optimistic: ${scenario_results['optimistic']['final_cost']:.2f} by {last_year + projection_years}."
+            )
+        }
+    
+    except Exception as e:
+        return {"error": f"Scenario analysis failed: {str(e)}"}
+
+
+def sensitivity_analysis(df: pd.DataFrame, product: str,
+                        parameter: str = "learning_rate",
+                        param_range: Tuple[float, float] = (0.10, 0.35)) -> Dict[str, Any]:
+    """
+    Sensitivity analysis: How sensitive are forecasts to parameter assumptions?
+    """
+    if product and "product_name" in df.columns:
+        sub = df[df["product_name"] == product].copy()
+    else:
+        sub = df.copy()
+    
+    if len(sub) < 3:
+        return {"error": "Insufficient data"}
+    
+    try:
+        sub = sub.sort_values('year').copy()
+        years = sub['year'].values
+        values = sub['value'].values
+        
+        last_year = int(years[-1])
+        last_value = float(values[-1])
+        
+        # Test parameter range
+        param_values = np.linspace(param_range[0], param_range[1], 20)
+        projection_year = last_year + 5  # 5 years ahead
+        
+        projected_values = []
+        
+        for param_val in param_values:
+            if parameter == "learning_rate":
+                # Assume 2.5 doublings in 5 years
+                doublings = 2.5
+                cost_multiplier = (2 ** doublings) ** (-param_val)
+                projected = last_value * cost_multiplier
+                projected_values.append(projected)
+        
+        # Calculate sensitivity metric (% change in output per % change in input)
+        output_range = max(projected_values) - min(projected_values)
+        input_range = param_range[1] - param_range[0]
+        
+        sensitivity = (output_range / last_value) / (input_range / np.mean(param_values)) if np.mean(param_values) > 0 else 0
+        
+        return {
+            "parameter": parameter,
+            "parameter_range": param_range,
+            "parameter_values": param_values.tolist(),
+            "projected_values": projected_values,
+            "sensitivity_index": float(sensitivity),
+            "highly_sensitive": sensitivity > 1.0,
+            "interpretation": (
+                f"Sensitivity analysis shows {'HIGH' if sensitivity > 1.0 else 'LOW'} sensitivity "
+                f"(index={sensitivity:.2f}). "
+                f"{'Forecasts highly dependent on parameter assumptions' if sensitivity > 1.0 else 'Forecasts relatively robust to parameter variations'}."
+            )
+        }
+    
+    except Exception as e:
+        return {"error": f"Sensitivity analysis failed: {str(e)}"}
+    
+# ================================================================================
 # ENHANCED VALIDATION PIPELINE
 # ================================================================================
 
@@ -811,7 +2488,39 @@ def run_validation_pipeline(results: List[Dict[str, Any]],
     """
     ENHANCED: Includes comprehensive data quality checks
     """
-
+    validation_logs = []
+    # STRUCTURED LOGGING
+    logger.info(f"Starting validation pipeline: {len(results)} entities")
+    logger.info(f"Seba framework enabled: {enable_seba}")
+    logger.info(f"LLM analysis enabled: {enable_llm}")
+# ===== DATA PROVENANCE TRACKING =====
+    validation_metadata = {
+        'validation_timestamp': datetime.now().isoformat(),
+        'validation_version': '2.0.0-enhanced',
+        'framework': 'Tony Seba STELLAR (Seba Technology Energy Logic Learning And Research)',
+        'validator_count': 35,
+        'input_records': len(results),
+        'provenance': []
+    }
+    
+    # Track provenance for each data point
+    for result in results:
+        entity = result.get('Entity_Name', 'Unknown')
+        sources = result.get('DataSource_URLs', [])
+        
+        validation_metadata['provenance'].append({
+            'entity': entity,
+            'region': result.get('Region', 'Unknown'),
+            'sources': sources,
+            'source_count': len(sources),
+            'timestamp': result.get('Timestamp', validation_metadata['validation_timestamp']),
+            'quality_score': result.get('Quality_Score', 0)
+        })
+    
+    validation_logs.append(f"📋 Validation Metadata: Version {validation_metadata['validation_version']}")
+    validation_logs.append(f"   Timestamp: {validation_metadata['validation_timestamp']}")
+    validation_logs.append(f"   Tracking provenance for {len(validation_metadata['provenance'])} entities")
+    # ===== END PROVENANCE TRACKING =====
     # Convert to DataFrame
     df = convert_results_to_dataframe(results)
 
@@ -828,7 +2537,7 @@ def run_validation_pipeline(results: List[Dict[str, Any]],
             'enhanced_validation': {}
         }
 
-    validation_logs = []
+   
     validation_logs.append(f"✅ Converted {len(results)} entities to {len(df)} data points")
 
     try:
@@ -947,7 +2656,73 @@ def run_validation_pipeline(results: List[Dict[str, Any]],
                     if 'error' not in scurve_result:
                         seba_results[f'{product}_scurve'] = scurve_result
                         validation_logs.append(f"   - {product} S-Curve: R²={scurve_result.get('r_squared', 0):.3f}, Compliant={scurve_result.get('compliant', False)}")
-
+    # TIPPING POINT DETECTION (ADD AFTER S-CURVE)
+                    tipping_result = detect_tipping_point(product_df, product)
+                    if 'error' not in tipping_result:
+                        seba_results[f'{product}_tipping_point'] = tipping_result
+                        if tipping_result.get('tipping_point_crossed'):
+                            validation_logs.append(
+                                f"   - {product} Tipping Point: Crossed in {tipping_result.get('tipping_point_year')} "
+                                f"({'MEETS' if tipping_result.get('meets_seba_pattern') else 'MISSES'} Seba pattern)"
+                            )
+                    
+                    # COST PARITY TRACKING (ADD AFTER TIPPING POINT)
+                    parity_result = track_cost_parity_forecast(product_df, product, parity_threshold=70.0)
+                    if 'error' not in parity_result:
+                        seba_results[f'{product}_cost_parity'] = parity_result
+                        if parity_result.get('at_parity'):
+                            validation_logs.append(f"   - {product} Cost Parity: Achieved in {parity_result.get('parity_year')}")
+                        elif parity_result.get('forecast_parity_year'):
+                            validation_logs.append(
+                                f"   - {product} Cost Parity Forecast: ~{parity_result.get('forecast_parity_year')} "
+                                f"({parity_result.get('years_until_parity')} years)"
+                            )
+            
+            # CONVERGENCE ANALYSIS (ADD AFTER PRODUCT LOOP)
+            convergence_result = analyze_convergence(clean_df)
+            if 'error' not in convergence_result:
+                seba_results['convergence_analysis'] = convergence_result
+                if convergence_result.get('converging_technologies'):
+                    validation_logs.append(
+                        f"   - âš ï¸ CONVERGENCE DETECTED: {convergence_result.get('high_growth_count')} "
+                        f"high-growth technologies - accelerated disruption likely"
+                    )
+            # ADVANCED ANALYTICS (ADD AFTER CONVERGENCE)
+            validation_logs.append("🔬 Running advanced analytics...")
+        
+            for product in products[:5]:
+                product_df = clean_df[clean_df['product_name'] == product]
+            
+                if len(product_df) >= 6:
+                    # Structural break detection
+                    chow_result = detect_structural_breaks_chow_test(product_df, product)
+                    if 'error' not in chow_result:
+                        seba_results[f'{product}_structural_break'] = chow_result
+                        if chow_result.get('structural_break_detected'):
+                            validation_logs.append(
+                                f"   - WARNING: {product} structural break at {chow_result.get('breakpoint_year')} "
+                                f"(p={chow_result.get('p_value'):.4f})"
+                            )
+                
+                    # Forecasting
+                    forecast_result = forecast_time_series(product_df, product, forecast_years=5)
+                    if 'error' not in forecast_result:
+                        seba_results[f'{product}_forecast'] = forecast_result
+                
+                    # Scenario analysis (only for cost data)
+                    scenario_result = scenario_analysis(product_df, product)
+                    if 'error' not in scenario_result:
+                        seba_results[f'{product}_scenarios'] = scenario_result
+                
+                    # Sensitivity analysis
+                    sensitivity_result = sensitivity_analysis(product_df, product)
+                    if 'error' not in sensitivity_result:
+                        seba_results[f'{product}_sensitivity'] = sensitivity_result
+                        if sensitivity_result.get('highly_sensitive'):
+                            validation_logs.append(
+                                f"   - NOTE: {product} forecasts highly sensitive to assumptions "
+                                f"(index={sensitivity_result.get('sensitivity_index'):.2f})"
+                            )   
         # Step 3: Scoring and Grading
         validation_logs.append("🎯 Step 3: Calculating validation scores...")
         score = calculate_enhanced_validation_score(
@@ -1040,6 +2815,7 @@ def run_validation_pipeline(results: List[Dict[str, Any]],
             'flagged_df': flagged_df,
             'score': score,
             'report': report,
+            'validation_metadata': validation_metadata,
             'seba_results': seba_results,
             'missing_analysis': missing_analysis,
             'outlier_analysis': outlier_analysis,
@@ -1487,7 +3263,184 @@ def generate_enhanced_validation_report(score: ValidationScore, seba_results: Di
 
 
     return "\n".join(report_lines)
-
+def generate_investment_grade_pdf_report(validation_results: Dict[str, Any],
+                                        output_filename: str = None) -> str:
+    """
+    Generate professional PDF report with methodology section.
+    Requires: pip install reportlab
+    """
+    try:
+        from reportlab.lib.pagesizes import letter, A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    except ImportError:
+        return "ERROR: reportlab not installed. Run: pip install reportlab"
+    
+    if output_filename is None:
+        output_filename = f"STELLAR_Validation_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    
+    # Create PDF
+    doc = SimpleDocTemplate(output_filename, pagesize=letter,
+                           rightMargin=72, leftMargin=72,
+                           topMargin=72, bottomMargin=18)
+    
+    # Container for PDF elements
+    story = []
+    
+    # Styles
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#2E4057'),
+        spaceAfter=30,
+        alignment=TA_CENTER
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.HexColor('#2E4057'),
+        spaceAfter=12,
+        spaceBefore=12
+    )
+    
+    # Title Page
+    story.append(Paragraph("STELLAR Framework", title_style))
+    story.append(Paragraph("Investment-Grade Data Validation Report", styles['Heading2']))
+    story.append(Spacer(1, 0.5*inch))
+    
+    story.append(Paragraph(
+        "<b>Seba Technology Energy Logic Learning And Research</b>",
+        styles['Normal']
+    ))
+    story.append(Spacer(1, 0.2*inch))
+    
+    # Metadata
+    validation_metadata = validation_results.get('validation_metadata', {})
+    story.append(Paragraph(f"<b>Report Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+    story.append(Paragraph(f"<b>Validation Version:</b> {validation_metadata.get('validation_version', 'Unknown')}", styles['Normal']))
+    story.append(Paragraph(f"<b>Framework:</b> {validation_metadata.get('framework', 'STELLAR')}", styles['Normal']))
+    
+    story.append(PageBreak())
+    
+    # Executive Summary
+    story.append(Paragraph("Executive Summary", heading_style))
+    
+    investment_grade = validation_results.get('investment_grade', {})
+    score = validation_results.get('score', ValidationScore())
+    
+    # Investment Grade Status
+    status_data = [
+        ['Investment Grade Status', investment_grade.get('status', 'Unknown')],
+        ['Overall Grade', investment_grade.get('grade', 'N/A')],
+        ['Quality Score', f"{investment_grade.get('score', 0)*100:.1f}%"],
+        ['Pass Rate', investment_grade.get('calculation_formula', 'N/A')]
+    ]
+    
+    status_table = Table(status_data, colWidths=[3*inch, 3*inch])
+    status_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E4057')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    
+    story.append(status_table)
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Recommendation
+    story.append(Paragraph("<b>Recommendation:</b>", styles['Normal']))
+    story.append(Paragraph(investment_grade.get('recommendation', 'N/A'), styles['Normal']))
+    
+    story.append(PageBreak())
+    
+    # Methodology Section
+    story.append(Paragraph("Validation Methodology", heading_style))
+    
+    methodology_text = """
+    <b>STELLAR Framework Overview</b><br/>
+    The STELLAR (Seba Technology Energy Logic Learning And Research) framework validates energy 
+    transition data using three core analytical approaches:<br/><br/>
+    
+    <b>1. Wright's Law (Technology Cost Curves)</b><br/>
+    Formula: Cost(n) = Cost₁ × n^(-b)<br/>
+    Expected learning rate: 15-30% cost reduction per production doubling<br/>
+    Reference: Wright, T. P. (1936). "Factors Affecting the Cost of Airplanes." 
+    Journal of the Aeronautical Sciences, 3(4), 122-128.<br/><br/>
+    
+    <b>2. S-Curve Adoption Theory</b><br/>
+    Market adoption follows sigmoid function: f(t) = L / (1 + e^(-k(t-t₀)))<br/>
+    Critical tipping point: 10% market penetration<br/>
+    Expected pattern: 10% → 90% adoption in under 10 years for disruptive technologies<br/>
+    Reference: Rogers, E. M. (2003). "Diffusion of Innovations" (5th ed.). Free Press.<br/>
+    Seba, T. (2014). "Clean Disruption of Energy and Transportation."<br/><br/>
+    
+    <b>3. Commodity Cycles</b><br/>
+    Supply/demand driven pricing with cyclical patterns<br/>
+    Expected: 3-7% annual growth, does NOT follow technology learning curves<br/>
+    Reference: Hamilton, J. D. (2009). "Understanding Crude Oil Prices." 
+    Energy Journal, 30(2), 179-206.<br/><br/>
+    
+    <b>Statistical Methods</b><br/>
+    • Bootstrap confidence intervals (1000 iterations, 95% CI)<br/>
+    • Grubbs test for outlier detection (α = 0.05)<br/>
+    • Linear regression for learning rate estimation<br/>
+    • Statistical power analysis (minimum 80% power required)<br/><br/>
+    
+    <b>Quality Dimensions Validated</b><br/>
+    • Completeness: Missing data analysis<br/>
+    • Accuracy: Logical consistency and type validation<br/>
+    • Consistency: Unit and format standardization<br/>
+    • Validity: Domain-specific rule compliance<br/>
+    • Framework Compliance: Wright's Law and S-Curve adherence<br/>
+    """
+    
+    story.append(Paragraph(methodology_text, styles['Normal']))
+    
+    story.append(PageBreak())
+    
+    # Validation Results Section
+    story.append(Paragraph("Detailed Validation Results", heading_style))
+    
+    summary = validation_results.get('validation_summary', {})
+    
+    results_data = [
+        ['Metric', 'Count', 'Percentage'],
+        ['Total Validators', summary.get('total', 35), '100%'],
+        ['Passed', summary.get('passed', 0), f"{summary.get('passed', 0)/35*100:.1f}%"],
+        ['Failed', summary.get('failed', 0), f"{summary.get('failed', 0)/35*100:.1f}%"],
+        ['Warnings', summary.get('warnings', 0), f"{summary.get('warnings', 0)/35*100:.1f}%"],
+        ['N/A (Not Applicable)', summary.get('na', 0), f"{summary.get('na', 0)/35*100:.1f}%"],
+    ]
+    
+    results_table = Table(results_data, colWidths=[2.5*inch, 1.5*inch, 1.5*inch])
+    results_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    
+    story.append(results_table)
+    
+    # Build PDF
+    doc.build(story)
+    
+    return output_filename
 def export_enhanced_validation_results(validation_results: Dict[str, Any],
                                        filename_base: str = "validation_results") -> Dict[str, str]:
     """

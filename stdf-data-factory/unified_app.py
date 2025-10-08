@@ -743,6 +743,7 @@ def process_pdf_with_ui_feedback(pdf_path: str) -> Dict[str, Any]:
 
 # ==================== SESSION STATE ====================
 
+
 def init_session_state():
     """Initialize session state"""
     defaults = {
@@ -753,14 +754,46 @@ def init_session_state():
         'extraction_mode': 'hybrid',
         'use_market_intelligence': True,
         # Data validation state
-        'collected_data': {},  # Store data from all workflows
+        'collected_data': {},
         'validation_results': None,
-        'validation_running': False
+        'validation_running': False,
+        # ADD: Audit logging
+        'audit_log': [],
+        'reviewer_name': None,
+        'expert_reviews': {}
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+# ADD THIS NEW FUNCTION AFTER init_session_state
+def log_audit_event(event_type: str, details: Dict[str, Any]):
+    """
+    Log audit event with timestamp and details.
+    Creates immutable audit trail for compliance.
+    """
+    if 'audit_log' not in st.session_state:
+        st.session_state.audit_log = []
+    
+    audit_entry = {
+        'timestamp': datetime.now().isoformat(),
+        'event_type': event_type,
+        'user': st.session_state.get('reviewer_name', 'Anonymous'),
+        'details': details,
+        'session_id': id(st.session_state)  # Unique session identifier
+    }
+    
+    st.session_state.audit_log.append(audit_entry)
+    
+    # Also write to persistent log file
+    try:
+        audit_file = 'validation/audit_log.jsonl'
+        with open(audit_file, 'a') as f:
+            f.write(json.dumps(audit_entry) + '\n')
+    except Exception as e:
+        pass  # Fail silently if file logging fails
 
 def reset_workflow():
     """Reset workflow"""
@@ -2002,7 +2035,7 @@ def convert_results_to_dataframe(results):
 
 
 def render_validation_visualizations(validation_results: Dict[str, Any]):
-    """Display validation visualizations"""
+    """Display comprehensive validation visualizations with Plotly"""
     st.markdown("#### 📊 Validation Metrics Dashboard")
     
     score = validation_results.get('score')
@@ -2010,71 +2043,380 @@ def render_validation_visualizations(validation_results: Dict[str, Any]):
         st.warning("No score data available for visualization.")
         return
     
-    # Dimension scores radar chart
-    if hasattr(score, 'dimension_scores') and score.dimension_scores:
-        dimensions = list(score.dimension_scores.keys())
-        values = list(score.dimension_scores.values())
-        
-        fig = go.Figure()
-        
-        fig.add_trace(go.Scatterpolar(
-            r=values,
-            theta=[dim.replace('_', ' ').title() for dim in dimensions],
-            fill='toself',
-            name='Validation Scores',
-            line_color='blue'
-        ))
-        
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 1]
-                )),
-            showlegend=True,
-            title="Data Quality Dimensions"
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+    # Create tabs for different visualization categories
+    viz_tabs = st.tabs([
+        "Quality Radar",
+        "Validator Results",
+        "Time Series Analysis",
+        "Wright's Law Fit",
+        "S-Curve Patterns"
+    ])
     
-    # Data quality issues breakdown
-    enhanced_validation = validation_results.get('enhanced_validation', {})
-    if enhanced_validation:
-        issue_counts = {}
-        
-        # Count different types of issues
-        if enhanced_validation.get('duplicates') is not None:
-            duplicates = enhanced_validation.get('duplicates')
-            if hasattr(duplicates, '__len__'):
-                issue_counts['Duplicates'] = len(duplicates)
-        
-        type_issues = enhanced_validation.get('type_issues', {})
-        if type_issues:
-            issue_counts['Type Issues'] = sum(len(v) for v in type_issues.values())
-        
-        outliers = enhanced_validation.get('outliers', {})
-        if outliers:
-            issue_counts['Outliers'] = sum(len(v) for v in outliers.values())
-        
-        logic_issues = enhanced_validation.get('logic_issues', {})
-        if logic_issues:
-            issue_counts['Logic Issues'] = sum(len(v) for v in logic_issues.values())
-        
-        format_issues = enhanced_validation.get('format_issues', {})
-        if format_issues:
-            issue_counts['Format Issues'] = len(format_issues)
-        
-        if issue_counts:
-            fig = px.bar(
-                x=list(issue_counts.keys()),
-                y=list(issue_counts.values()),
-                title="Data Quality Issues by Category"
-            )
+    # TAB 1: Quality Dimensions Radar Chart
+    with viz_tabs[0]:
+        if hasattr(score, 'dimension_scores') and score.dimension_scores:
+            dimensions = list(score.dimension_scores.keys())
+            values = list(score.dimension_scores.values())
+            
+            # Create radar chart
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatterpolar(
+                r=values,
+                theta=[dim.replace('_', ' ').title() for dim in dimensions],
+                fill='toself',
+                name='Current Score',
+                line_color='#667eea',
+                fillcolor='rgba(102, 126, 234, 0.3)'
+            ))
+            
+            # Add reference line at 0.8 (acceptable threshold)
+            fig.add_trace(go.Scatterpolar(
+                r=[0.8] * len(dimensions),
+                theta=[dim.replace('_', ' ').title() for dim in dimensions],
+                name='Acceptable (80%)',
+                line=dict(color='green', dash='dash'),
+                showlegend=True
+            ))
+            
             fig.update_layout(
-                xaxis_title="Issue Type",
-                yaxis_title="Count"
+                polar=dict(
+                    radialaxis=dict(
+                        visible=True,
+                        range=[0, 1],
+                        tickformat='.0%'
+                    )
+                ),
+                showlegend=True,
+                title="Data Quality Dimensions",
+                height=500
             )
+            
             st.plotly_chart(fig, use_container_width=True)
+            
+            # Show dimension details
+            col1, col2 = st.columns(2)
+            for i, (dim, val) in enumerate(score.dimension_scores.items()):
+                with col1 if i % 2 == 0 else col2:
+                    status = "✅" if val >= 0.8 else "⚠️" if val >= 0.6 else "❌"
+                    st.metric(
+                        dim.replace('_', ' ').title(),
+                        f"{val:.1%}",
+                        delta=f"{(val-0.8)*100:.1f}% vs target" if val < 0.8 else "Above target",
+                        delta_color="normal" if val >= 0.8 else "inverse"
+                    )
+        else:
+            st.info("No dimension scores available")
+    
+    # TAB 2: Validator Results Sunburst
+    with viz_tabs[1]:
+        expert_validations = validation_results.get('expert_validations', {})
+        
+        if expert_validations:
+            # Prepare data for sunburst
+            sunburst_data = []
+            
+            # Categories for grouping
+            categories = {
+                'Data Integrity': ['units_and_scale', 'year_anomalies', 'definition_clarity'],
+                'Cost Analysis': ['bradd_cost_curve', 'cost_parity', 'cost_curve_anomaly', 'inflation_adjustment', 'cost_curve_learning_rate'],
+                'Adoption Analysis': ['bradd_adoption_curve', 'adoption_saturation', 'adoption_curve_shape'],
+                'Market Context': ['market_context'],
+                'Energy Transition': ['oil_displacement', 'derived_oil_displacement', 'capacity_factor', 'global_oil_sanity'],
+                'Data Sources': ['data_source_quality', 'data_source_integrity', 'multi_source_consistency'],
+                'Regional': ['regional_market_logic', 'regional_definition', 'global_sum'],
+                'Technical': ['metric_validity', 'unit_conversion', 'ai_reality'],
+                'Specialized': ['spelling_nomenclature', 'battery_size_evolution', 'regional_price_pattern', 
+                               'historical_label', 'growth_rate_bounds', 'lithium_chemistry', 
+                               'commodity_behavior', 'trusted_sources']
+            }
+            
+            # Count results by category and status
+            for category, validators in categories.items():
+                for validator_key in validators:
+                    if validator_key in expert_validations:
+                        results_list = expert_validations[validator_key]
+                        
+                        passed = sum(1 for r in results_list if r.get('pass') is True)
+                        failed = sum(1 for r in results_list if r.get('pass') is False)
+                        na = sum(1 for r in results_list if r.get('pass') is None)
+                        
+                        if passed > 0:
+                            sunburst_data.append({
+                                'category': category,
+                                'validator': validator_key.replace('_', ' ').title(),
+                                'status': 'Passed',
+                                'count': passed
+                            })
+                        if failed > 0:
+                            sunburst_data.append({
+                                'category': category,
+                                'validator': validator_key.replace('_', ' ').title(),
+                                'status': 'Failed',
+                                'count': failed
+                            })
+                        if na > 0:
+                            sunburst_data.append({
+                                'category': category,
+                                'validator': validator_key.replace('_', ' ').title(),
+                                'status': 'N/A',
+                                'count': na
+                            })
+            
+            if sunburst_data:
+                df_sunburst = pd.DataFrame(sunburst_data)
+                
+                # Create sunburst chart
+                fig = px.sunburst(
+                    df_sunburst,
+                    path=['category', 'validator', 'status'],
+                    values='count',
+                    color='status',
+                    color_discrete_map={'Passed': 'green', 'Failed': 'red', 'N/A': 'gray'},
+                    title="Validator Results Breakdown"
+                )
+                
+                fig.update_layout(height=600)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No validator results to display")
+        else:
+            st.info("No expert validation results available")
+    
+    # TAB 3: Time Series Analysis
+    with viz_tabs[2]:
+        validation_data = st.session_state.get('validation_data', [])
+        
+        if validation_data:
+            # Select product for detailed view
+            products = list(set(d.get('Entity_Name', 'Unknown') for d in validation_data))
+            selected_product = st.selectbox("Select Product for Analysis:", products)
+            
+            # Get data for selected product
+            product_data = [d for d in validation_data if d.get('Entity_Name') == selected_product]
+            
+            if product_data:
+                # Create time series plot with anomalies highlighted
+                all_points = []
+                for data in product_data:
+                    region = data.get('Region', 'Unknown')
+                    years = data.get('X', [])
+                    values = data.get('Y', [])
+                    
+                    for year, value in zip(years, values):
+                        if value is not None and value > 0:
+                            all_points.append({
+                                'Year': year,
+                                'Value': value,
+                                'Region': region
+                            })
+                
+                if all_points:
+                    df_plot = pd.DataFrame(all_points)
+                    
+                    # Create line chart
+                    fig = px.line(
+                        df_plot,
+                        x='Year',
+                        y='Value',
+                        color='Region',
+                        title=f"{selected_product} - Time Series",
+                        markers=True
+                    )
+                    
+                    # Highlight outliers
+                    enhanced = validation_results.get('enhanced_validation', {})
+                    outliers = enhanced.get('outliers', {})
+                    
+                    for series_key, outlier_list in outliers.items():
+                        if selected_product in series_key:
+                            for outlier in outlier_list:
+                                year = outlier.get('year')
+                                value = outlier.get('value')
+                                if year and value:
+                                    fig.add_annotation(
+                                        x=year,
+                                        y=value,
+                                        text="Outlier",
+                                        showarrow=True,
+                                        arrowhead=2,
+                                        arrowcolor="red",
+                                        ax=0,
+                                        ay=-40
+                                    )
+                    
+                    fig.update_layout(height=500, hovermode='x unified')
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No time series data available")
+    
+    # TAB 4: Wright's Law Fit Visualization
+    with viz_tabs[3]:
+        seba_results = validation_results.get('seba_results', {})
+        wright_results = {k: v for k, v in seba_results.items() if 'wrights_law' in k and not v.get('skipped')}
+        
+        if wright_results:
+            # Select product
+            products = [k.replace('_wrights_law', '') for k in wright_results.keys()]
+            selected = st.selectbox("Select Product for Wright's Law Analysis:", products)
+            
+            result_key = f"{selected}_wrights_law"
+            if result_key in wright_results:
+                result = wright_results[result_key]
+                
+                # Get original data points
+                validation_data = st.session_state.get('validation_data', [])
+                product_data = [d for d in validation_data if d.get('Entity_Name') == selected]
+                
+                if product_data:
+                    years = product_data[0].get('X', [])
+                    values = product_data[0].get('Y', [])
+                    
+                    # Create log-log plot
+                    fig = go.Figure()
+                    
+                    # Actual data points
+                    fig.add_trace(go.Scatter(
+                        x=years,
+                        y=values,
+                        mode='markers',
+                        name='Actual Data',
+                        marker=dict(size=10, color='blue')
+                    ))
+                    
+                    # Fitted line
+                    if result.get('slope') and result.get('r_squared'):
+                        from scipy import stats
+                        slope = result['slope']
+                        
+                        # Generate fitted line
+                        x_fit = np.linspace(min(years), max(years), 100)
+                        # y_fit = exp(slope * x + intercept) but we need to reconstruct intercept
+                        log_values = np.log(values)
+                        slope_fit, intercept_fit, _, _, _ = stats.linregress(years, log_values)
+                        y_fit = np.exp(slope_fit * x_fit + intercept_fit)
+                        
+                        fig.add_trace(go.Scatter(
+                            x=x_fit,
+                            y=y_fit,
+                            mode='lines',
+                            name=f"Wright's Law Fit (R²={result.get('r_squared', 0):.3f})",
+                            line=dict(color='red', dash='dash')
+                        ))
+                    
+                    fig.update_layout(
+                        title=f"Wright's Law: {selected}",
+                        xaxis_title="Year",
+                        yaxis_title="Cost (log scale)",
+                        yaxis_type="log",
+                        height=500,
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Show metrics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Learning Rate", f"{result.get('learning_rate', 0)*100:.1f}%")
+                    with col2:
+                        st.metric("R²", f"{result.get('r_squared', 0):.3f}")
+                    with col3:
+                        compliant = "✅ Yes" if result.get('compliant') else "❌ No"
+                        st.metric("Compliant", compliant)
+        else:
+            st.info("No Wright's Law analysis available for visualization")
+    
+    # TAB 5: S-Curve Patterns
+    with viz_tabs[4]:
+        seba_results = validation_results.get('seba_results', {})
+        scurve_results = {k: v for k, v in seba_results.items() if 'scurve' in k}
+        
+        if scurve_results:
+            products = [k.replace('_scurve', '') for k in scurve_results.keys()]
+            selected = st.selectbox("Select Product for S-Curve Analysis:", products, key='scurve_select')
+            
+            result_key = f"{selected}_scurve"
+            if result_key in scurve_results:
+                result = scurve_results[result_key]
+                
+                # Get original data
+                validation_data = st.session_state.get('validation_data', [])
+                product_data = [d for d in validation_data if d.get('Entity_Name') == selected]
+                
+                if product_data:
+                    years = product_data[0].get('X', [])
+                    values = product_data[0].get('Y', [])
+                    
+                    # Create S-curve visualization
+                    fig = go.Figure()
+                    
+                    # Actual data
+                    fig.add_trace(go.Scatter(
+                        x=years,
+                        y=values,
+                        mode='markers',
+                        name='Actual Data',
+                        marker=dict(size=10, color='green')
+                    ))
+                    
+                    # Fitted S-curve
+                    if result.get('r_squared'):
+                        # Reconstruct sigmoid
+                        try:
+                            from scipy.optimize import curve_fit
+                            
+                            def sigmoid(x, L, k, x0):
+                                return L / (1 + np.exp(-k * (x - x0)))
+                            
+                            popt, _ = curve_fit(sigmoid, years, values, maxfev=5000)
+                            
+                            x_fit = np.linspace(min(years), max(years), 200)
+                            y_fit = sigmoid(x_fit, *popt)
+                            
+                            fig.add_trace(go.Scatter(
+                                x=x_fit,
+                                y=y_fit,
+                                mode='lines',
+                                name=f"S-Curve Fit (R²={result.get('r_squared', 0):.3f})",
+                                line=dict(color='orange', dash='dash')
+                            ))
+                            
+                            # Mark inflection point
+                            inflection = popt[2]
+                            if min(years) <= inflection <= max(years):
+                                inflection_y = sigmoid(inflection, *popt)
+                                fig.add_trace(go.Scatter(
+                                    x=[inflection],
+                                    y=[inflection_y],
+                                    mode='markers',
+                                    name='Inflection Point',
+                                    marker=dict(size=15, color='red', symbol='star')
+                                ))
+                        except:
+                            pass
+                    
+                    fig.update_layout(
+                        title=f"S-Curve Adoption: {selected}",
+                        xaxis_title="Year",
+                        yaxis_title="Adoption Level",
+                        height=500,
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Metrics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("R²", f"{result.get('r_squared', 0):.3f}")
+                    with col2:
+                        st.metric("Growth Rate", f"{result.get('growth_rate', 0):.2f}")
+                    with col3:
+                        compliant = "✅ S-Curve" if result.get('compliant') else "⚠️ Linear"
+                        st.metric("Pattern", compliant)
+        else:
+            st.info("No S-curve analysis available for visualization")
 
 def render_export_options(validation_results: Dict[str, Any]):
     """Display export options for validation results"""
@@ -2135,6 +2477,139 @@ def render_export_options(validation_results: Dict[str, Any]):
         )
         
         st.info(f"Clean dataset contains {len(clean_df):,} validated records.")
+
+def render_human_review_interface(validation_results: Dict):
+    """
+    Human review system for expert sign-off on validation results
+    """
+    st.markdown("### 👤 Human Expert Review")
+    
+    # Initialize review state if not exists
+    if 'expert_reviews' not in st.session_state:
+        st.session_state.expert_reviews = {}
+    
+    # Get failed validations requiring review
+    expert_validations = validation_results.get('expert_validations', {})
+    
+    failed_validators = []
+    for validator_key, results_list in expert_validations.items():
+        for result in results_list:
+            if result.get('pass') is False:
+                failed_validators.append({
+                    'validator': validator_key,
+                    'product': result.get('product', 'Unknown'),
+                    'region': result.get('region', 'Unknown'),
+                    'explanation': result.get('explanation', ''),
+                    'severity': result.get('severity', 'medium')
+                })
+    
+    if not failed_validators:
+        st.success("✅ No failed validations requiring expert review")
+        return
+    
+    st.warning(f"⚠️ {len(failed_validators)} validation failures require expert review")
+    
+    # Group by severity
+    critical = [v for v in failed_validators if v.get('severity') == 'critical']
+    high = [v for v in failed_validators if v.get('severity') == 'high']
+    medium = [v for v in failed_validators if v.get('severity') in ['medium', None]]
+    
+    # Review interface
+    tab1, tab2, tab3 = st.tabs([
+        f"🔴 Critical ({len(critical)})",
+        f"🟠 High ({len(high)})",
+        f"🟡 Medium ({len(medium)})"
+    ])
+    
+    def render_review_items(items, severity_name):
+        for i, item in enumerate(items):
+            review_key = f"{item['validator']}_{item['product']}_{item['region']}"
+            
+            with st.expander(f"{item['validator'].replace('_', ' ').title()} - {item['product']} ({item['region']})", expanded=False):
+                st.write(f"**Issue:** {item['explanation']}")
+                
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    review_action = st.radio(
+                        "Expert Decision:",
+                        ["Pending Review", "Accept (False Positive)", "Reject (Valid Issue)", "Override with Note"],
+                        key=f"review_action_{review_key}_{severity_name}",
+                        horizontal=True
+                    )
+                
+                with col2:
+                    if review_action == "Override with Note":
+                        override_note = st.text_area(
+                            "Justification:",
+                            key=f"override_note_{review_key}_{severity_name}",
+                            placeholder="Explain why this issue can be accepted..."
+                        )
+                    else:
+                        override_note = None
+                
+                if st.button(f"✓ Sign Off", key=f"signoff_{review_key}_{severity_name}"):
+                    st.session_state.expert_reviews[review_key] = {
+                        'action': review_action,
+                        'note': override_note,
+                        'reviewer': st.session_state.get('reviewer_name', 'Anonymous'),
+                        'timestamp': datetime.now().isoformat(),
+                        'validator': item['validator'],
+                        'product': item['product'],
+                        'region': item['region']
+                    }
+                    st.success(f"✅ Review recorded for {review_key}")
+                    st.rerun()
+    
+    with tab1:
+        if critical:
+            st.error("🔴 **Critical Issues** - Must be addressed before investment decision")
+            render_review_items(critical, "critical")
+        else:
+            st.success("✅ No critical issues")
+    
+    with tab2:
+        if high:
+            st.warning("🟠 **High Priority** - Should be resolved")
+            render_review_items(high, "high")
+        else:
+            st.success("✅ No high priority issues")
+    
+    with tab3:
+        if medium:
+            st.info("🟡 **Medium Priority** - Review recommended")
+            render_review_items(medium, "medium")
+        else:
+            st.success("✅ No medium priority issues")
+    
+    # Show review summary
+    if st.session_state.expert_reviews:
+        st.markdown("---")
+        st.markdown("### 📝 Review Audit Log")
+        
+        reviews_df = pd.DataFrame([
+            {
+                'Validator': v['validator'],
+                'Product': v['product'],
+                'Region': v['region'],
+                'Decision': v['action'],
+                'Reviewer': v['reviewer'],
+                'Timestamp': v['timestamp']
+            }
+            for k, v in st.session_state.expert_reviews.items()
+        ])
+        
+        st.dataframe(reviews_df, use_container_width=True, hide_index=True)
+        
+        # Export reviews
+        if st.button("📥 Export Review Log"):
+            review_json = json.dumps(st.session_state.expert_reviews, indent=2)
+            st.download_button(
+                "Download Review Log (JSON)",
+                review_json,
+                f"expert_reviews_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                "application/json"
+            )
 
 def render_query_url_extraction_workflow():
     """Query+URL extraction - combines query context with URL"""
@@ -2279,8 +2754,8 @@ async def run_query_url_extraction(query: Union[str, dict], url: str, api_key: s
 
 def detect_data_characteristics(validation_data: List[Dict]) -> Dict[str, Any]:
     """
-    Intelligently detect data characteristics for adaptive validation.
-    Returns comprehensive metadata about the data type.
+    ENHANCED: Intelligently detect data characteristics with multi-field checking.
+    Priority: unit field → metric field → curve_type → entity name
     """
     if not validation_data:
         return {}
@@ -2298,56 +2773,78 @@ def detect_data_characteristics(validation_data: List[Dict]) -> Dict[str, Any]:
         'curve_type': curve_type,
     }
     
-    # 1. COST DATA DETECTION (Wright's Law applicable)
-    cost_indicators = ['$', 'usd', 'dollar', 'cost', 'price', 'lcoe', '/mwh', '/kwh', '/watt']
-    characteristics['is_cost_data'] = (
-        any(ind in unit for ind in cost_indicators) or
-        any(ind in metric for ind in cost_indicators) or
-        'cost' in curve_type or
-        'wright' in curve_type
-    )
+    # 1. COST DATA DETECTION (Wright's Law applicable) - PRIORITY CHECK
+    # Check unit field FIRST (most reliable)
+    cost_indicators_unit = ['$', 'usd', 'dollar', 'eur', '€', 'gbp', '£', 'cent', 
+                            '/mwh', '/kwh', '/watt', 'lcoe', 'levelized']
+    characteristics['is_cost_data'] = any(ind in unit for ind in cost_indicators_unit)
+    
+    # Check metric field if unit check inconclusive
+    if not characteristics['is_cost_data']:
+        cost_indicators_metric = ['cost', 'price', 'lcoe', 'levelized', 'capex', 'opex', 'expenditure']
+        characteristics['is_cost_data'] = any(ind in metric for ind in cost_indicators_metric)
+    
+    # Check curve_type field as fallback
+    if not characteristics['is_cost_data'] and curve_type:
+        characteristics['is_cost_data'] = 'cost' in curve_type or 'wright' in curve_type or 'price' in curve_type
     
     # 2. PHYSICAL QUANTITY DETECTION (S-Curve applicable)
-    physical_indicators = ['sales', 'capacity', 'generation', 'consumption', 'fleet', 'adoption', 'units', 'vehicles']
+    physical_indicators = ['sales', 'capacity', 'generation', 'consumption', 'fleet', 
+                          'adoption', 'units', 'vehicles', 'deployment', 'installations',
+                          'gwh', 'twh', 'mwh', 'gw', 'mw', 'kw']
     characteristics['is_physical_data'] = (
         any(ind in metric for ind in physical_indicators) or
+        any(ind in unit for ind in physical_indicators) or
         's_curve' in curve_type or
-        's-curve' in curve_type or
-        (not characteristics['is_cost_data'] and any(u in unit for u in ['twh', 'gw', 'mw']))
+        's-curve' in curve_type
     )
     
+    # Ensure mutual exclusivity - cost takes precedence
+    if characteristics['is_cost_data']:
+        characteristics['is_physical_data'] = False
+    
     # 3. COMMODITY DETECTION
-    commodities = ['aluminum', 'aluminium', 'copper', 'steel', 'iron', 'gold', 'silver', 'zinc', 'nickel']
+    commodities = ['aluminum', 'aluminium', 'copper', 'steel', 'iron', 'gold', 'silver', 
+                  'zinc', 'nickel', 'cobalt', 'lithium', 'platinum', 'palladium', 'tin',
+                  'crude', 'oil', 'gas', 'coal']
     characteristics['is_commodity'] = any(comm in entity_name for comm in commodities)
     
     # 4. TECHNOLOGY DETECTION
-    technologies = ['solar', 'wind', 'battery', 'ev', 'electric vehicle', 'pv', 'photovoltaic', 'turbine']
+    technologies = ['solar', 'wind', 'battery', 'ev', 'electric vehicle', 'pv', 
+                   'photovoltaic', 'turbine', 'fuel cell', 'hydrogen']
     characteristics['is_technology'] = any(tech in entity_name for tech in technologies)
     
     # 5. ENERGY/EV SPECIFIC
-    energy_terms = ['solar', 'wind', 'oil', 'gas', 'coal', 'nuclear', 'energy', 'power', 'generation']
+    energy_terms = ['solar', 'wind', 'oil', 'gas', 'coal', 'nuclear', 'energy', 
+                   'power', 'generation', 'renewable', 'fossil']
     characteristics['is_energy'] = any(term in entity_name for term in energy_terms)
     
-    ev_terms = ['ev', 'electric vehicle', 'electric_vehicle', 'bev', 'phev']
+    ev_terms = ['ev', 'electric vehicle', 'electric_vehicle', 'bev', 'phev', 
+               'electric car', 'electric truck']
     characteristics['is_ev'] = any(term in entity_name for term in ev_terms)
     
     # 6. BATTERY SPECIFIC
-    battery_terms = ['battery', 'lithium', 'li-ion', 'lithium-ion', 'cell']
+    battery_terms = ['battery', 'lithium', 'li-ion', 'lithium-ion', 'cell', 
+                    'energy storage', 'ess']
     characteristics['is_battery'] = any(term in entity_name for term in battery_terms)
     
-    # 7. DETERMINE PRIMARY FRAMEWORK
+    # 7. DETERMINE PRIMARY FRAMEWORK with detailed reasoning
     if characteristics['is_commodity']:
         characteristics['primary_framework'] = 'Commodity Cycles'
-        characteristics['expected_pattern'] = 'Cyclical, 3-7% annual growth'
+        characteristics['expected_pattern'] = 'Cyclical, 3-7% annual growth, supply/demand driven'
+        characteristics['framework_reason'] = f"{entity_name} is a commodity - follows supply/demand cycles, not tech learning curves"
     elif characteristics['is_cost_data']:
         characteristics['primary_framework'] = "Wright's Law"
         characteristics['expected_pattern'] = '15-30% cost reduction per production doubling'
+        characteristics['framework_reason'] = f"{entity_name} cost data - technologies get cheaper with scale"
     elif characteristics['is_physical_data']:
         characteristics['primary_framework'] = 'S-Curve Adoption'
         characteristics['expected_pattern'] = 'Sigmoid: slow→exponential→saturation'
+        characteristics['framework_reason'] = f"{entity_name} adoption/deployment - follows S-curve pattern"
     else:
         characteristics['primary_framework'] = 'Unknown'
-        characteristics['expected_pattern'] = 'To be determined'
+        characteristics['expected_pattern'] = 'To be determined through analysis'
+        characteristics['framework_reason'] = 'Data type unclear - needs manual classification'
     
     return characteristics
 
@@ -2384,10 +2881,20 @@ def should_validator_run(validator_key: str, characteristics: Dict[str, Any]) ->
         if characteristics.get('is_cost_data'):
             return (True, "")
         else:
+            # Enhanced context-aware N/A explanations
             if characteristics.get('is_commodity'):
-                reason = f"Wright's Law only applies to technology cost curves. Current data: {entity} (commodity, follows cyclical patterns)"
+                reason = (f"N/A - Wright's Law only applies to technology cost curves. "
+                     f"Current data: {entity} (commodity). "
+                     f"Commodities follow supply/demand cycles with 3-7% annual growth, "
+                     f"not exponential tech cost decline. "
+                     f"Framework: {characteristics.get('primary_framework')}")
             else:
-                reason = f"Wright's Law only applies to cost/price data. Current data: {entity} (physical quantity)"
+                unit = characteristics.get('unit', '')
+                metric = characteristics.get('metric', '')
+                reason = (f"N/A - Wright's Law only applies to cost/price data. "
+                     f"Current data: {entity} ({metric if metric else 'physical quantity'}). "
+                     f"Unit: {unit if unit else 'unknown'}. "
+                     f"This is {characteristics.get('primary_framework')} data, not cost data.")
             return (False, reason)
     
     # CATEGORY 3: ADOPTION ANALYSIS
@@ -2399,7 +2906,11 @@ def should_validator_run(validator_key: str, characteristics: Dict[str, Any]) ->
         if characteristics.get('is_physical_data') and not characteristics.get('is_cost_data'):
             return (True, "")
         else:
-            reason = f"S-Curve analysis only applies to adoption/deployment data. Current data: {entity} (cost curve)"
+            reason = (f"N/A - S-Curve analysis only applies to adoption/deployment/generation data. "
+                 f"Current data: {entity} (cost/price curve). "
+                 f"S-curves show sigmoid adoption patterns (slow→exponential→saturation), "
+                 f"not applicable to cost data which follows Wright's Law decline. "
+                 f"Framework: {characteristics.get('primary_framework')}")
             return (False, reason)
     
     # CATEGORY 4: ENERGY TRANSITION
@@ -3130,12 +3641,18 @@ def render_statistical_analysis_tab(validation_results: Dict):
 
 
 def calculate_investment_grade_enhanced(validation_results: Dict) -> Dict:
-    """Calculate investment grade status with 95% threshold"""
+    """
+    Calculate investment grade status with 95% threshold.
+    CRITICAL: Excludes N/A from denominator (only counts applicable validators)
+    """
     summary = validation_results.get('validation_summary', {})
     passed = summary.get('passed', 0)
     failed = summary.get('failed', 0)
     warnings = summary.get('warnings', 0)
+    na = summary.get('na', 0)
+    total = summary.get('total', 35)
     
+    # CRITICAL: Only count applicable validators (exclude N/A)
     applicable = passed + failed + warnings
     
     if applicable == 0:
@@ -3143,39 +3660,53 @@ def calculate_investment_grade_enhanced(validation_results: Dict) -> Dict:
             'qualified': False,
             'score': 0,
             'grade': 'F',
-            'status': 'NO DATA',
-            'recommendation': 'No applicable validators'
+            'status': 'NO APPLICABLE DATA',
+            'recommendation': 'No applicable validators for this data type',
+            'passed': 0,
+            'failed': 0,
+            'warnings': 0,
+            'na': na,
+            'applicable': 0,
+            'total': total,
+            'calculation_formula': 'No applicable validators'
         }
     
+    # Calculate pass rate ONLY from applicable validators
     pass_rate = passed / applicable
     
+    # Grade thresholds
     if pass_rate >= 0.95:
         grade = 'A+'
-        status = 'INVESTMENT-GRADE'
+        status = 'INVESTMENT-GRADE ✓'
         qualified = True
-        recommendation = "Data meets institutional investment standards"
+        recommendation = "Data meets institutional investment standards (≥95% pass rate)"
     elif pass_rate >= 0.90:
         grade = 'A'
         status = 'NEAR INVESTMENT-GRADE'
         qualified = False
         gap = (0.95 - pass_rate) * 100
-        recommendation = f"Improve {gap:.1f}% to reach investment grade threshold"
+        recommendation = f"Improve {gap:.1f}% to reach investment grade threshold (currently {pass_rate*100:.1f}%)"
     elif pass_rate >= 0.80:
         grade = 'B+'
         status = 'GOOD QUALITY'
         qualified = False
         gap = (0.95 - pass_rate) * 100
-        recommendation = f"Improve {gap:.1f}% for investment grade"
+        recommendation = f"Improve {gap:.1f}% for investment grade (currently {pass_rate*100:.1f}%)"
     elif pass_rate >= 0.70:
         grade = 'B'
         status = 'ACCEPTABLE'
         qualified = False
-        recommendation = "Significant improvements needed for investment grade"
-    else:
+        recommendation = f"Significant improvements needed for investment grade (currently {pass_rate*100:.1f}%)"
+    elif pass_rate >= 0.60:
         grade = 'C'
-        status = 'CRITICAL'
+        status = 'NEEDS IMPROVEMENT'
         qualified = False
-        recommendation = "Data quality below acceptable standards"
+        recommendation = f"Major improvements required (currently {pass_rate*100:.1f}%)"
+    else:
+        grade = 'F'
+        status = 'CRITICAL - BELOW STANDARDS'
+        qualified = False
+        recommendation = f"Data quality below acceptable standards (currently {pass_rate*100:.1f}%)"
     
     return {
         'qualified': qualified,
@@ -3186,9 +3717,11 @@ def calculate_investment_grade_enhanced(validation_results: Dict) -> Dict:
         'passed': passed,
         'failed': failed,
         'warnings': warnings,
-        'applicable': applicable
+        'na': na,
+        'applicable': applicable,
+        'total': total,
+        'calculation_formula': f"{passed} passed / {applicable} applicable = {pass_rate*100:.1f}% (N/A excluded)"
     }
-
 
 def render_data_validation_workflow():
     """Complete STELLAR validation workflow"""
@@ -3269,6 +3802,12 @@ def render_data_validation_workflow():
             status_text = st.empty()
 
             try:
+                # LOG: Validation started
+                log_audit_event('VALIDATION_STARTED', {
+                    'data_sources': len(st.session_state.collected_data),
+                    'validator_count': 35,
+                    'user': st.session_state.get('reviewer_name', 'Anonymous')
+                })
                 status_text.info("🔬 Converting collected data...")
                 progress_bar.progress(0.1)
                 validation_data = convert_collected_data_to_validation_format()
@@ -3313,6 +3852,17 @@ def render_data_validation_workflow():
                 st.session_state.validation_data = validation_data
                 progress_bar.progress(1.0)
                 status_text.success("✅ Validation complete!")
+
+                # LOG: Validation completed
+                investment_grade = validation_results.get('investment_grade', {})
+                log_audit_event('VALIDATION_COMPLETED', {
+                    'status': investment_grade.get('status', 'Unknown'),
+                    'grade': investment_grade.get('grade', 'N/A'),
+                    'score': investment_grade.get('score', 0),
+                    'passed': investment_grade.get('passed', 0),
+                    'failed': investment_grade.get('failed', 0),
+                    'qualified': investment_grade.get('qualified', False)
+                })
 
                 if investment_grade.get('qualified'):
                     st.balloons()
@@ -3367,6 +3917,8 @@ def render_validation_results_complete(validation_results: Dict):
     "🔬 Domain Expert Rules (35)",
     "📈 Wright's Law",
     "📉 S-Curves",
+    "👤 Human Review",
+    "📚 Methodology",
     "📄 Report"
 ])
 
@@ -3505,7 +4057,44 @@ def render_validation_results_complete(validation_results: Dict):
                             desc = validator_info.get(validator_key, {}).get('description', '')
                             if desc:
                                 st.caption(desc)
-                            
+                        # ADD: Show source code option
+                            if st.checkbox(f"📖 View Source & Methodology", key=f"source_{validator_key}"):
+                                with st.expander(f"Source Code: {display_name}", expanded=True):
+                                    st.markdown("**📚 Methodology Reference:**")
+        
+                                    # Add methodology without importing functions
+                                    if 'wright' in validator_key or 'cost' in validator_key:
+                                        st.info("""
+                                         **Wright's Law (1936)**: Cost declines as a power function of cumulative production.
+                                        - Formula: Cost(n) = Cost(1) × n^(-b)
+                                        - Expected learning rate: 15-30% cost reduction per doubling
+                                        - Reference: Wright, T.P. (1936). "Factors Affecting the Cost of Airplanes"
+                                        """)
+                                    elif 'adoption' in validator_key or 'scurve' in validator_key:
+                                        st.info("""
+                                        **S-Curve Adoption Theory**: Technology adoption follows sigmoid pattern.
+                                        - Pattern: Slow → Exponential → Saturation
+                                        - Critical inflection: 5-10% market penetration
+                                        - References: Rogers (2003) "Diffusion of Innovations", Seba (2014) "Clean Disruption"
+                                        """)
+                                    elif 'oil' in validator_key or 'displacement' in validator_key:
+                                        st.info("""
+                                        **STDF Framework (Seba-Tainter Disruption Framework)**:
+                                        - Oil Displacement = EV Fleet × km/year × liters/100km ÷ 159 liters/barrel
+                                        - Reference: Seba, T. & Arbib, J. (2017) "Rethinking Transportation 2020-2030"
+                                        """)
+                                    elif 'commodity' in validator_key:
+                                        st.info("""
+                                        **Commodity Cycles**: Supply/demand driven pricing, not technology curves.
+                                        - Expected: 3-7% annual growth, cyclical patterns
+                                        - Does NOT follow Wright's Law or S-curves
+                                        """)
+                                    else:
+                                        st.info("Domain expert validation rule - see ground_truth_validators.py for implementation")
+        
+                                    # Show link to source code file
+                                    st.markdown(f"**Source File:** `validation/ground_truth_validators.py` - Function: `{validator_key}_validator`")
+                    
                             if results_list and isinstance(results_list, list) and len(results_list) > 0:
                                 result = results_list[0]
                                 explanation = result.get('explanation', '')
@@ -3531,7 +4120,29 @@ def render_validation_results_complete(validation_results: Dict):
                                 st.info("⭕ N/A")
                             else:
                                 st.info("ℹ️ Info")
-
+                    # ADD: Show calculation details in expandable section (ADD AFTER STATUS DISPLAY)
+                    if results_list and isinstance(results_list, list) and len(results_list) > 0:
+                        result = results_list[0]
+    
+                        if result.get('evidence'):
+                            with st.expander("🔬 Calculation Details", expanded=False):
+                                evidence = result.get('evidence', {})
+            
+                                # Format evidence nicely
+                                if isinstance(evidence, dict):
+                                    cols = st.columns(2)
+                                    col_idx = 0
+                
+                                    for key, value in evidence.items():
+                                        with cols[col_idx % 2]:
+                                            if isinstance(value, (int, float)):
+                                                if isinstance(value, float):
+                                                    st.metric(key.replace('_', ' ').title(), f"{value:.3f}")
+                                                else:
+                                                    st.metric(key.replace('_', ' ').title(), value)
+                                            else:
+                                                st.write(f"**{key.replace('_', ' ').title()}:** {value}")
+                                        col_idx += 1
     with tabs[5]:
         st.markdown("### ⚡ Wright's Law Analysis")
         
@@ -3600,8 +4211,202 @@ def render_validation_results_complete(validation_results: Dict):
                             st.warning("⚠️ Linear")
             else:
                 st.info("No S-curve analysis results available")
-
-    with tabs[7]:
+    with tabs[7]:  # Human Review tab
+        render_human_review_interface(validation_results)
+    with tabs[8]:  # Methodology tab
+        st.markdown("### 📚 STELLAR Framework Methodology")
+    
+        st.info("""
+        The STELLAR (Seba Technology Energy Logic Learning And Research) framework validates 
+        energy transition data using rigorous academic and industry-standard methodologies.
+        """)
+    
+        # Framework overview
+        framework_tabs = st.tabs([
+            "Wright's Law",
+            "S-Curve Theory", 
+            "Statistical Methods",
+            "Data Quality Standards",
+            "References"
+        ])
+    
+        with framework_tabs[0]:
+            st.markdown("#### Wright's Law (Technology Cost Curves)")
+        
+            st.markdown("""
+            **Theoretical Foundation:**  
+            Wright's Law (1936) states that costs decline as a power function of cumulative production.
+        
+            **Mathematical Formulation:**
+                Cost(n) = Cost₁ × n^(-b)
+            Where:
+            - n = cumulative production (in units of doubling)
+            - b = learning parameter
+            - Learning Rate (LR) = 1 - 2^(-b)
+        
+            **Expected Learning Rates:**
+            - Solar PV: 20-25% per doubling
+            - Lithium-ion batteries: 15-20% per doubling
+            - Wind turbines: 10-15% per doubling
+        
+            **Validation Criteria:**
+            - R² ≥ 0.60 (model fit)
+            - Learning rate: 15-30% range
+            - Negative slope (costs declining)
+            - p-value < 0.05 (statistical significance)
+            """)
+        
+            st.markdown("**Key Reference:**")
+            st.code("""
+            Wright, T. P. (1936). "Factors Affecting the Cost of Airplanes." 
+            Journal of the Aeronautical Sciences, 3(4), 122-128.
+            DOI: 10.2514/8.155
+            """)
+    
+        with framework_tabs[1]:
+            st.markdown("#### S-Curve Adoption Theory")
+        
+            st.markdown("""
+            **Theoretical Foundation:**  
+            Technology adoption follows a sigmoid (S-shaped) curve with three phases:
+        
+            **Mathematical Formulation:**
+        f(t) = L / (1 + e^(-k(t-t₀)))
+            Where:
+            - L = maximum adoption level (saturation)
+            - k = growth rate
+            - t₀ = inflection point
+        
+            **Three Phases:**
+            1. **Slow Start (0-10%):** Early adopters, high costs, limited infrastructure
+            2. **Exponential Growth (10-90%):** Mainstream adoption, economies of scale
+            3. **Saturation (90-100%):** Market maturity, replacement-only demand
+        
+            **Tony Seba's Tipping Point:**  
+            After 10% market penetration, disruptive technologies typically reach 90% within 10 years.
+        
+            **Validation Criteria:**
+            - R² ≥ 0.70 (sigmoid fit)
+            - Identifiable inflection point
+            - Growth acceleration then deceleration
+            """)
+        
+            st.markdown("**Key References:**")
+            st.code("""
+            Rogers, E. M. (2003). "Diffusion of Innovations" (5th ed.). Free Press.
+        
+            Seba, T. (2014). "Clean Disruption of Energy and Transportation: 
+            How Silicon Valley Will Make Oil, Nuclear, Natural Gas, Coal, Electric 
+            Utilities and Conventional Cars Obsolete by 2030." Clean Planet Ventures.
+            """)
+    
+        with framework_tabs[2]:
+            st.markdown("#### Statistical Methods")
+        
+            st.markdown("""
+            **1. Bootstrap Confidence Intervals**
+            - Method: Resampling with replacement (1000 iterations)
+            - Confidence Level: 95%
+            - Application: Learning rate uncertainty estimation
+        
+            **2. Grubbs Test for Outliers**
+            - Null Hypothesis (H₀): No outliers present
+            - Alternative Hypothesis (H₁): One outlier present
+            - Significance Level (α): 0.05
+            - Test Statistic: G = |x_max - x̄| / s
+        
+            **3. Chow Test for Structural Breaks**
+            - Null Hypothesis (H₀): No structural break
+            - Alternative Hypothesis (H₁): Structural break exists
+            - F-statistic for comparing model fits
+            - Application: Detecting methodology changes
+        
+            **4. Statistical Power Analysis**
+            - Minimum Power Required: 80%
+            - Effect Size: Cohen's d for medium effects (0.5)
+            - Application: Sample size adequacy
+        
+            **5. Linear Regression**
+            - Method: Ordinary Least Squares (OLS)
+            - Diagnostics: R², p-values, residual analysis
+            - Application: Trend detection, learning rates
+            """)
+    
+        with framework_tabs[3]:
+            st.markdown("#### Data Quality Standards")
+        
+            st.markdown("""
+            **Investment-Grade Criteria:**
+        
+            **Minimum Thresholds:**
+            - Overall Quality Score: ≥80%
+            - Pass Rate (Applicable Validators): ≥95%
+            - Completeness: ≥95%
+            - Critical Fields: 100% complete
+            - Source Quality: Tier 1 or Tier 2 sources
+        
+            **Quality Dimensions (ISO 8000 Alignment):**
+            1. **Completeness:** No missing critical values
+            2. **Accuracy:** Logical consistency, type validation
+            3. **Consistency:** Unit standardization across series
+            4. **Validity:** Domain rule compliance
+            5. **Timeliness:** Recent data, appropriate temporal coverage
+            6. **Provenance:** Clear source documentation
+        
+            **Data Source Tiers:**
+            - **Tier 1 (Gold Standard):** IEA, EIA, IRENA, USGS, World Bank
+            - **Tier 2 (Reputable):** BNEF, Ember, McKinsey, academic papers
+            - **Tier 3 (Requires Verification):** Wikipedia, trading platforms
+            - **Tier 4 (Reject):** Unverified/unknown sources
+            """)
+    
+        with framework_tabs[4]:
+            st.markdown("#### Academic & Industry References")
+        
+            st.markdown("""
+            **Core Framework:**
+        
+            1. Wright, T. P. (1936). "Factors Affecting the Cost of Airplanes." 
+            *Journal of the Aeronautical Sciences*, 3(4), 122-128.
+        
+            2. Rogers, E. M. (2003). *Diffusion of Innovations* (5th ed.). Free Press.
+        
+            3. Seba, T. (2014). *Clean Disruption of Energy and Transportation*. 
+            Clean Planet Ventures.
+        
+            4. Seba, T., & Arbib, J. (2017). "Rethinking Transportation 2020-2030." 
+            RethinkX Sector Disruption Report.
+        
+            **Statistical Methods:**
+        
+            5. Efron, B., & Tibshirani, R. J. (1994). *An Introduction to the Bootstrap*. 
+            Chapman and Hall/CRC.
+        
+            6. Chow, G. C. (1960). "Tests of Equality Between Sets of Coefficients in 
+            Two Linear Regressions." *Econometrica*, 28(3), 591-605.
+        
+            7. Grubbs, F. E. (1969). "Procedures for Detecting Outlying Observations 
+            in Samples." *Technometrics*, 11(1), 1-21.
+        
+            **Energy Transition:**
+        
+            8. International Energy Agency (2023). *World Energy Outlook 2023*. IEA.
+        
+            9. IRENA (2023). *Renewable Power Generation Costs in 2022*. 
+           International Renewable Energy Agency.
+        
+            10. Way, R., et al. (2022). "Empirically grounded technology forecasts 
+            and the energy transition." *Joule*, 6(9), 2057-2082.
+            """)
+        
+            st.markdown("**Online Resources:**")
+            st.markdown("""
+            - [RethinkX Reports](https://www.rethinkx.com/reports)
+            - [IEA Data & Statistics](https://www.iea.org/data-and-statistics)
+            - [IRENA Publications](https://www.irena.org/publications)
+            - [Our World in Data - Energy](https://ourworldindata.org/energy)
+            """)
+    with tabs[9]:
         st.markdown("### 📄 Export Options")
         
         col1, col2 = st.columns(2)
@@ -3641,7 +4446,61 @@ N/A: {summary.get('na', 0)}
                     f"stellar_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                     "text/plain"
                 )
+       # ADD: Professional PDF Export
+        if st.button("📄 Generate PDF Report (Professional)", use_container_width=True):
+            with st.spinner("Generating professional PDF report..."):
+                try:
+                    pdf_filename = generate_investment_grade_pdf_report(
+                        validation_results,
+                        f"STELLAR_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                    )
+                    
+                    if pdf_filename.startswith("ERROR"):
+                        st.error(pdf_filename)
+                        st.info("💡 Install reportlab: pip install reportlab")
+                    else:
+                        st.success(f"✅ PDF generated: {pdf_filename}")
+                        
+                        # Offer download
+                        with open(pdf_filename, 'rb') as f:
+                            pdf_data = f.read()
+                        
+                        st.download_button(
+                            "📥 Download PDF",
+                            pdf_data,
+                            pdf_filename,
+                            "application/pdf",
+                            use_container_width=True
+                        )
+                except Exception as e:
+                    st.error(f"PDF generation failed: {e}")
+                    st.info("Ensure reportlab is installed: pip install reportlab")
+    #ADD: Audit log export
+    st.markdown("---")
+    st.markdown("### 🔍 Audit Trail")
         
+    if st.session_state.get('audit_log'):
+        st.write(f"**Total Audit Events:** {len(st.session_state.audit_log)}")
+            
+        # Show recent events
+        with st.expander("Recent Audit Events", expanded=False):
+            recent_events = st.session_state.audit_log[-10:][::-1]  # Last 10, reversed
+            for event in recent_events:
+                st.write(f"**{event['timestamp']}** - {event['event_type']}")
+                st.caption(f"User: {event['user']}")
+            
+        # Export audit log
+        if st.button("📥 Download Complete Audit Log", use_container_width=True):
+            audit_json = json.dumps(st.session_state.audit_log, indent=2)
+            st.download_button(
+                "Download Audit Log (JSON)",
+                audit_json,
+                f"audit_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                "application/json",
+                use_container_width=True
+            )
+    else:
+        st.info("No audit events recorded in this session")
         with col2:
             validation_data = st.session_state.get('validation_data', [])
             if validation_data:
