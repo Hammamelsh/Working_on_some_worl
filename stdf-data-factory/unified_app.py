@@ -17,7 +17,7 @@ import hashlib
 import sys
 from datetime import datetime
 import numpy as np
-from typing import Dict, List, Any, Union, Tuple
+from typing import Dict, List, Any, Union, Tuple, Optional 
 from urllib.parse import urlparse
 from openai import OpenAI
 
@@ -863,10 +863,6 @@ def convert_collected_data_to_validation_format() -> List[Dict[str, Any]]:
         if not data:
             continue  # Skip if no data
     
-    for data_key, data_entry in st.session_state.collected_data.items():
-        data = data_entry['data']
-        data_type = data_entry['data_type']
-        source = data_entry['source']
         
         try:
             if data_type == 'chart_data':
@@ -2249,7 +2245,58 @@ def render_validation_visualizations(validation_results: Dict[str, Any]):
                     st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No time series data available")
+    # ADD: Call the visualization function
+    st.markdown("---")
+    st.markdown("### 📊 Interactive Visualizations")
     
+    try:
+        # Render the visualizations that were defined but not called
+        viz_container = st.container()
+        with viz_container:
+            # Import plotly for charts
+            import plotly.graph_objects as go
+            import plotly.express as px
+            
+            # Quality Radar Chart
+            if hasattr(score, 'dimension_scores') and score.dimension_scores:
+                dimensions = list(score.dimension_scores.keys())
+                values = list(score.dimension_scores.values())
+                
+                fig = go.Figure()
+                
+                fig.add_trace(go.Scatterpolar(
+                    r=values,
+                    theta=[dim.replace('_', ' ').title() for dim in dimensions],
+                    fill='toself',
+                    name='Current Score',
+                    line_color='#667eea',
+                    fillcolor='rgba(102, 126, 234, 0.3)'
+                ))
+                
+                fig.add_trace(go.Scatterpolar(
+                    r=[0.8] * len(dimensions),
+                    theta=[dim.replace('_', ' ').title() for dim in dimensions],
+                    name='Acceptable (80%)',
+                    line=dict(color='green', dash='dash'),
+                    showlegend=True
+                ))
+                
+                fig.update_layout(
+                    polar=dict(
+                        radialaxis=dict(
+                            visible=True,
+                            range=[0, 1],
+                            tickformat='.0%'
+                        )
+                    ),
+                    showlegend=True,
+                    title="Data Quality Dimensions Radar",
+                    height=500
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Visualizations unavailable: {e}")
     # TAB 4: Wright's Law Fit Visualization
     with viz_tabs[3]:
         seba_results = validation_results.get('seba_results', {})
@@ -3720,7 +3767,8 @@ def calculate_investment_grade_enhanced(validation_results: Dict) -> Dict:
         'na': na,
         'applicable': applicable,
         'total': total,
-        'calculation_formula': f"{passed} passed / {applicable} applicable = {pass_rate*100:.1f}% (N/A excluded)"
+        'calculation_formula': f"({passed} passed) / ({applicable} applicable) × 100 = {pass_rate*100:.1f}% | Excluded: {na} N/A validators",
+        'formula_breakdown': f"Passed: {passed}, Failed: {failed}, Warnings: {warnings}, Applicable: {applicable}, N/A: {na}, Total: {total}"
     }
 
 def render_data_validation_workflow():
@@ -4041,11 +4089,17 @@ def render_validation_results_complete(validation_results: Dict):
                 ('lithium_chemistry', 'Lithium Chemistry Validation'),
                 ('commodity_behavior', 'Commodity Price Behavior'),
                 ('trusted_sources', 'Trusted Source Verification'),
-            ],
+                ('structural_break', 'Structural Break Detection'),
+                ('mass_balance', 'Mass Balance Validation'),
+    ],
         }
         
         for category_name, validators in categories.items():
-            with st.expander(category_name, expanded=False):
+            # Add emoji indicators for category status
+            category_results = [expert_validations.get(v[0], []) for v in validators if v[0] in expert_validations]
+            has_fails = any(interpret_validator_result(r, v[0]) == 'fail' for r in category_results for v in validators if v[0] in expert_validations)
+            status_emoji = "❌" if has_fails else "✅"
+            with st.expander(f"{status_emoji} {category_name}", expanded=has_fails):
                 for validator_key, display_name in validators:
                     if validator_key in expert_validations:
                         results_list = expert_validations[validator_key]

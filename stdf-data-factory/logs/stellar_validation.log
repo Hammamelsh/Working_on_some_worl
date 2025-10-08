@@ -34,3 +34,35 @@
 2025-10-08 13:18:24 - STELLAR - INFO - [validation_support.py:552] - validate_enhanced_data_quality() - Logical issues found: 0
 2025-10-08 13:18:24 - STELLAR - INFO - [validation_support.py:556] - validate_enhanced_data_quality() - Format inconsistencies: 0
 2025-10-08 13:18:24 - STELLAR - INFO - [validation_support.py:714] - analyze_wrights_law() - Using cached Wright's Law result for Price
+2025-10-08 15:10:55 - STELLAR - INFO - [validation_support.py:103] - <module>() - ================================================================================
+2025-10-08 15:10:55 - STELLAR - INFO - [validation_support.py:104] - <module>() - STELLAR Framework Validation Module Initialized
+2025-10-08 15:10:55 - STELLAR - INFO - [validation_support.py:105] - <module>() - Version: 2.0.0-enhanced
+2025-10-08 15:10:55 - STELLAR - INFO - [validation_support.py:106] - <module>() - Logging to: logs/stellar_validation.log
+2025-10-08 15:10:55 - STELLAR - INFO - [validation_support.py:107] - <module>() - ================================================================================
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:2494] - run_validation_pipeline() - Starting validation pipeline: 1 entities
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:2495] - run_validation_pipeline() - Seba framework enabled: True
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:2496] - run_validation_pipeline() - LLM analysis enabled: False
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:530] - validate_enhanced_data_quality() - Running enhanced data quality validation...
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:534] - validate_enhanced_data_quality() - Completeness: 92.3%
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:538] - validate_enhanced_data_quality() - Duplicates found: 0
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:542] - validate_enhanced_data_quality() - Type issues in 0 columns
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:547] - validate_enhanced_data_quality() - Outliers detected: 0
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:552] - validate_enhanced_data_quality() - Logical issues found: 0
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:556] - validate_enhanced_data_quality() - Format inconsistencies: 0
+2025-10-08 15:11:55 - STELLAR - INFO - [validation_support.py:714] - analyze_wrights_law() - Using cached Wright's Law result for Price
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:103] - <module>() - ================================================================================
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:104] - <module>() - STELLAR Framework Validation Module Initialized
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:105] - <module>() - Version: 2.0.0-enhanced
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:106] - <module>() - Logging to: logs/stellar_validation.log
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:107] - <module>() - ================================================================================
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:2494] - run_validation_pipeline() - Starting validation pipeline: 1 entities
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:2495] - run_validation_pipeline() - Seba framework enabled: True
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:2496] - run_validation_pipeline() - LLM analysis enabled: False
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:530] - validate_enhanced_data_quality() - Running enhanced data quality validation...
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:534] - validate_enhanced_data_quality() - Completeness: 92.3%
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:538] - validate_enhanced_data_quality() - Duplicates found: 0
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:542] - validate_enhanced_data_quality() - Type issues in 0 columns
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:547] - validate_enhanced_data_quality() - Outliers detected: 0
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:552] - validate_enhanced_data_quality() - Logical issues found: 0
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:556] - validate_enhanced_data_quality() - Format inconsistencies: 0
+2025-10-08 15:18:17 - STELLAR - INFO - [validation_support.py:714] - analyze_wrights_law() - Using cached Wright's Law result for Price

@@ -9,7 +9,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, List, Any, Union, Tuple, Optional
 import logging
 from scipy import stats
 from scipy.optimize import curve_fit
@@ -2488,12 +2488,14 @@ def run_validation_pipeline(results: List[Dict[str, Any]],
     """
     ENHANCED: Includes comprehensive data quality checks
     """
+    # FIXED: validation_logs must be first line
     validation_logs = []
-    # STRUCTURED LOGGING
+    
     logger.info(f"Starting validation pipeline: {len(results)} entities")
     logger.info(f"Seba framework enabled: {enable_seba}")
     logger.info(f"LLM analysis enabled: {enable_llm}")
-# ===== DATA PROVENANCE TRACKING =====
+    
+    # ===== DATA PROVENANCE TRACKING =====
     validation_metadata = {
         'validation_timestamp': datetime.now().isoformat(),
         'validation_version': '2.0.0-enhanced',
@@ -2801,7 +2803,15 @@ def run_validation_pipeline(results: List[Dict[str, Any]],
                 for key, vals in commodity_validations.items():
                     if vals:
                         expert_validations[f'commodity_{key}'] = vals
-        # Step 6: Generate Report
+        # Step 6: Generate visualizations for Streamlit display
+        validation_logs.append("📊 Step 6: Preparing visualizations...")
+        try:
+            from plotly import graph_objects as go
+            visualization_ready = True
+        except ImportError:
+            visualization_ready = False
+            validation_logs.append("   ⚠️ Plotly not available for visualizations")
+        # Step 7: Generate Report
         validation_logs.append("📄 Step 6: Generating validation report...")
         report = generate_enhanced_validation_report(
             score, seba_results, enhanced_validation,
@@ -3626,3 +3636,89 @@ def export_validation_results(validation_results: Dict[str, Any],
     Wrapper function for export - calls the enhanced version
     """
     return export_enhanced_validation_results(validation_results, filename_base)
+
+# ADD THIS ENTIRE FUNCTION AT THE END OF validation_support.py
+
+def generate_investment_grade_pdf_report(validation_results: Dict[str, Any],
+                                        output_filename: str = None) -> str:
+    """
+    Generate professional PDF report with methodology section.
+    Requires: pip install reportlab
+    """
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    except ImportError:
+        return "ERROR: reportlab not installed. Run: pip install reportlab"
+    
+    if output_filename is None:
+        output_filename = f"STELLAR_Validation_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    
+    # Create PDF
+    doc = SimpleDocTemplate(output_filename, pagesize=letter,
+                           rightMargin=72, leftMargin=72,
+                           topMargin=72, bottomMargin=18)
+    
+    # Container for PDF elements
+    story = []
+    
+    # Styles
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#2E4057'),
+        spaceAfter=30,
+        alignment=TA_CENTER
+    )
+    
+    # Title Page
+    story.append(Paragraph("STELLAR Framework", title_style))
+    story.append(Paragraph("Investment-Grade Data Validation Report", styles['Heading2']))
+    story.append(Spacer(1, 0.5*inch))
+    
+    # Metadata
+    validation_metadata = validation_results.get('validation_metadata', {})
+    story.append(Paragraph(f"<b>Report Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+    story.append(Paragraph(f"<b>Validation Version:</b> {validation_metadata.get('validation_version', '2.0.0')}", styles['Normal']))
+    
+    story.append(PageBreak())
+    
+    # Executive Summary
+    story.append(Paragraph("Executive Summary", styles['Heading1']))
+    
+    investment_grade = validation_results.get('investment_grade', {})
+    
+    # Status table
+    status_data = [
+        ['Investment Grade Status', investment_grade.get('status', 'Unknown')],
+        ['Overall Grade', investment_grade.get('grade', 'N/A')],
+        ['Quality Score', f"{investment_grade.get('score', 0)*100:.1f}%"],
+        ['Pass Rate', investment_grade.get('calculation_formula', 'N/A')]
+    ]
+    
+    status_table = Table(status_data, colWidths=[3*inch, 3*inch])
+    status_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    
+    story.append(status_table)
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Recommendation
+    story.append(Paragraph("<b>Recommendation:</b>", styles['Normal']))
+    story.append(Paragraph(investment_grade.get('recommendation', 'N/A'), styles['Normal']))
+    
+    # Build PDF
+    doc.build(story)
+    
+    return output_filename

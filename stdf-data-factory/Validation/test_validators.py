@@ -10,6 +10,9 @@ from ground_truth_validators import *
 from validation_support import *
 from statistical_tests import *
 
+# Mock logger if needed
+import logging
+logging.basicConfig(level=logging.INFO)
 
 # ================================================================================
 # TEST FIXTURES
